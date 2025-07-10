@@ -52,7 +52,10 @@ def MultiLevel(xk, level_max, levels, args_multilevel, param_regularization, cst
     coarse_observation = observations[f"level{levels}"]
     coarse_physics = coarse_physics[f"level{levels}"]
     param_reg_fine = param_regularization
-    param_reg_coarse = param_reg_fine / 4
+    if isinstance(prior, dinv.optim.prior.PnP):
+        param_reg_coarse = param_reg_fine
+    else:
+        param_reg_coarse = param_reg_fine / 4
     """
     Send information to the coarse level
     """
@@ -73,9 +76,16 @@ def MultiLevel(xk, level_max, levels, args_multilevel, param_regularization, cst
         for k in range(param_coarse_iter):
             if levels > 1 and k < max_ML_steps:
                 xk_coarse = MultiLevel(xk_coarse, level_max, levels-1, args_multilevel, param_reg_coarse, cst_grad) # Recursive call if levels > 1
-            xk_coarse = xk_coarse -coherence \
-                - step_size*data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics) \
-                - step_size*grad_prior(xk_coarse, param_reg_coarse) # Coarse gradient descent
+
+            if isinstance(prior, dinv.optim.prior.PnP):
+                xk_coarse = prior.denoiser(
+                    xk_coarse - coherence - step_size*data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics),
+                    param_reg_coarse
+                )
+            else:
+                xk_coarse = xk_coarse -coherence \
+                    - step_size*data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics) \
+                    - step_size*grad_prior(xk_coarse, param_reg_coarse) # Coarse gradient descent
             
     # Coarse correction
     coarse_correction = xk_coarse - x0_coarse
@@ -175,10 +185,7 @@ class Residual(nn.Module):
             self.l12prior = dinv.optim.L12Prior()
     def forward(self, x, gamma):
         if isinstance(self.prior, dinv.optim.prior.PnP):
-            if isinstance(self.denoiser, dinv.models.DRUNet):
-                return (x - self.denoiser(x, gamma) )
-            else:
-                return (x - self.denoiser(x) )
+            return (x - self.denoiser(x, gamma) )
         if isinstance(self.prior, dinv.optim.TVPrior):
             Dx = self.prior.nabla(x) # The TV operator is not normalized, so Lipschit constant is ||D||_2^2 = 8
             return 1/8 * gamma * self.prior.nabla_adjoint( Dx - self.l12prior.prox(Dx,gamma) )
