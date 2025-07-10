@@ -134,28 +134,17 @@ def create_information_transfer(filter, device):
 
     return information_transfer
 
-def create_coarse_observations(observation, filter, levels, device):
+def create_coarse_observations(observation, filter_name, levels, device):
     """
     Create the coarse observations object
     """
-    img_shape = observation.shape[-3:]
-    scales = [2 ** i for i in range(0,levels)]
-    scales = scales[::-1]
-    filter=create_filter(filter) 
-    information_transfer = DownsamplingTransfer(filter)
-    k0 = information_transfer.filter_object.get_filter()
-    filt_2d = information_transfer.set_2d_filter(k0, dtype=torch.float32).to(device)
-    Upsamplings = [Upsampling(img_size=img_shape, filter=filt_2d, factor=factor, device=device) for factor in scales]
-    # if not isinstance(info_transfer, DownsamplingTransfer):
-    #     raise ValueError("info_transfer must be an instance of DownsamplingTransfer")
-    if not isinstance(observation, torch.Tensor):
-        raise ValueError("observation must be a torch.Tensor")
-    coarse_observations = {}
-    coarse_observations[f'level{levels}'] = observation
+    coarse_obs_dict = {f'level{levels}': observation}
+    coarse_obs_iter = observation
     for i in range(levels-1, 0, -1):
-        # coarse_observations[f'level{i-1}'] =Upsamplings[i-1].Upsample(Upsamplings[i-1].Downsample(observation))
-        coarse_observations[f'level{i}'] =Upsamplings[i-1].Downsample(observation)
-    return coarse_observations
+        ds = DownsamplingTransfer(create_filter(filter_name))
+        coarse_obs_iter = ds.to_coarse(coarse_obs_iter, coarse_obs_iter.shape[-3:])
+        coarse_obs_dict[f'level{i}'] = coarse_obs_iter
+    return coarse_obs_dict
 
 def create_coarse_physics(physics, img_shape, levels, filter, device):
     """
@@ -165,8 +154,7 @@ def create_coarse_physics(physics, img_shape, levels, filter, device):
     scales = scales[::-1]
     filter=create_filter(filter)  # choose your filter
     information_transfer = DownsamplingTransfer(filter)
-    k0 = information_transfer.filter_object.get_filter()
-    filt_2d = information_transfer.set_2d_filter(k0, dtype=torch.float32).to(device)
+    filt_2d = information_transfer._getfilter().type(torch.float32)
     coarse_physics = {}
     coarse_physics[f'level{levels}'] = physics
     for i in range(levels-1, 0, -1):

@@ -68,14 +68,6 @@ args_multilevel = ParametersMultilevel(
     device=device
 )
 
-coarse_observations = {f'level{levels}': y}
-coarse_y = y
-for i in range(levels-1, 0, -1):
-    ds = DownsamplingTransfer(SincFilter())
-    coarse_y = ds.to_coarse(coarse_y, coarse_y.shape[-3:])
-    coarse_observations[f'level{i}'] = coarse_y
-args_multilevel.observations = coarse_observations
-
 coarse_physics = {f'level{levels}': physics}
 coarse_data = physics.mask.data
 for i in range(levels-1, 0, -1):
