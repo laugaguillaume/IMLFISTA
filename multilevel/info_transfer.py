@@ -1,6 +1,8 @@
 import numpy
 import torch.nn
+import torch.nn.functional as F
 import deepinv
+import pywt
 """
 Created on Oct 18 2024
 @author: Nils Laurent
@@ -43,6 +45,44 @@ class DownsamplingTransfer:
             upsample = torch.nn.Upsample(scale_factor=self.factor, mode='nearest')
             return upsample(x)
         return self.op.A_adjoint(x) * self.factor ** 2
+
+    def to_coarse_wavelet(self, x, target_shape): # Peut-être qu'il vaudrait mieux utiliser pywt... On n'a pas W^T(Wx) = x :(
+        if not hasattr(self.filter_object, 'get_2d_filter_H'):
+            raise ValueError("This filter does not support wavelet decomposition.")
+        device = x.device
+        dtype = x.dtype
+
+        filters = {
+            'LL': self.filter_object.get_2d_filter().type(dtype),
+            'LH': self.filter_object.get_2d_filter_H().type(dtype),
+            'HL': self.filter_object.get_2d_filter_V().type(dtype),
+            'HH': self.filter_object.get_2d_filter_D().type(dtype)
+        }
+
+        components = {}
+        for name, filt in filters.items():
+            filt = filt.to(dtype).unsqueeze(0).unsqueeze(0).to(device)
+            op = deepinv.physics.Downsampling(
+                target_shape, filter=filt, factor=self.factor, device=device, padding=self.padding
+            )
+            result = op.A(x.unsqueeze(0)) if x.dim() == 3 else op.A(x)
+            components[name] = result.squeeze(0) if x.dim() == 3 else result
+
+        return components
+
+    def to_fine_wavelet(self, components, wavelet):
+        LL = components['LL'].cpu().numpy()
+        LH = components['LH'].cpu().numpy()
+        HL = components['HL'].cpu().numpy()
+        HH = components['HH'].cpu().numpy()
+
+        coeffs = (LL, (LH, HL, HH))
+
+        reconstructed = pywt.idwt2(coeffs, wavelet)
+        reconstructed = torch.from_numpy(reconstructed)
+
+        return reconstructed
+
     def to(self, device):
         # Just in case someone tries to move it like a model
         if self.op is not None:
@@ -135,6 +175,23 @@ class Haar:
         k0 = torch.tensor([1.0, 1.0])
         return torch.outer(k0, k0)
 
+    def get_2d_filter_H(self):
+        # Haar filter for horizontal direction
+        k0 = torch.tensor([1.0, 1.0])
+        k1 = torch.tensor([-1.0, 1.0])
+        return torch.outer(k0, k1)
+
+    def get_2d_filter_V(self):
+        # Haar filter for vertical direction
+        k0 = torch.tensor([1.0, 1.0])
+        k1 = torch.tensor([-1.0, 1.0])
+        return torch.outer(k1, k0)
+
+    def get_2d_filter_D(self):
+        # Haar filter for diagonal direction
+        k1 = torch.tensor([-1.0, 1.0])
+        return torch.outer(k1, k1)
+
 filter_classes = {
     "dirac": Dirac,
     "blackmannharris": BlackmannHarris,
@@ -150,7 +207,23 @@ def create_filter(name):
         return filter_classes[name]()
     else:
         raise ValueError(f"Unknown filter type: {name}")
-device = 'cpu'
-filter = create_filter("blackmannharris")  # choose your filter
-information_transfer = DownsamplingTransfer(filter)  # create operator
-information_transfer = information_transfer.to(device)
+
+if __name__ == "__main__":
+    device = 'cpu'
+    x = deepinv.utils.load_url_image(
+        url=deepinv.utils.get_image_url("butterfly.png"), img_size=256).to(device)
+
+    filter = create_filter("haar")
+    downsampler = DownsamplingTransfer(filter).to(device)
+    components = downsampler.to_coarse_wavelet(x, target_shape=(1, 3, 128, 128))
+
+    # Visualiser les composants
+    deepinv.utils.plot(
+        [components['LL'], components['LH'], components['HL'], components['HH']],
+        titles=['Approximation (LL)', 'Horizontal (LH)', 'Vertical (HL)', 'Diagonal (HH)'],
+        cmap='gray'
+    )
+
+    # Reconstruct the image from wavelet components
+    reconstructed = downsampler.to_fine_wavelet(components, wavelet='haar')
+    deepinv.utils.plot([x, reconstructed], titles=['Original Image', 'Reconstructed Image'], cmap='gray')
