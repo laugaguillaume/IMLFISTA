@@ -46,27 +46,20 @@ class DownsamplingTransfer:
             return upsample(x)
         return self.op.A_adjoint(x) * self.factor ** 2
 
-    def to_coarse_wavelet(self, x, target_shape): # Peut-être qu'il vaudrait mieux utiliser pywt... On n'a pas W^T(Wx) = x :(
-        if not hasattr(self.filter_object, 'get_2d_filter_H'):
-            raise ValueError("This filter does not support wavelet decomposition.")
-        device = x.device
-        dtype = x.dtype
-
-        filters = {
-            'LL': self.filter_object.get_2d_filter().type(dtype),
-            'LH': self.filter_object.get_2d_filter_H().type(dtype),
-            'HL': self.filter_object.get_2d_filter_V().type(dtype),
-            'HH': self.filter_object.get_2d_filter_D().type(dtype)
-        }
-
+    def to_coarse_wavelet(self, x):
         components = {}
-        for name, filt in filters.items():
-            filt = filt.to(dtype).unsqueeze(0).unsqueeze(0).to(device)
-            op = deepinv.physics.Downsampling(
-                target_shape, filter=filt, factor=self.factor, device=device, padding=self.padding
-            )
-            result = op.A(x.unsqueeze(0)) if x.dim() == 3 else op.A(x)
-            components[name] = result.squeeze(0) if x.dim() == 3 else result
+        if not hasattr(self.filter_object, 'wavelet_type'):
+            raise ValueError("This filter does not support wavelet decomposition.")
+
+        wavelet_type = self.filter_object.wavelet_type()
+        coeffs = pywt.wavedec2(
+            x.cpu().numpy(), wavelet=wavelet_type, mode='periodization', level=1
+        )
+
+        components['LL'] = torch.from_numpy(coeffs[0]).to(x.device)
+        components['LH'] = torch.from_numpy(coeffs[1][0]).to(x.device)
+        components['HL'] = torch.from_numpy(coeffs[1][1]).to(x.device)
+        components['HH'] = torch.from_numpy(coeffs[1][2]).to(x.device)
 
         return components
 
@@ -88,6 +81,31 @@ class DownsamplingTransfer:
         if self.op is not None:
             self.op.to(device)
         return self
+
+    # Peut-être qu'il vaudrait mieux utiliser pywt... On n'a pas W^T(Wx) = x :(
+    '''def to_coarse_wavelet_conv(self, x, target_shape):
+        if not hasattr(self.filter_object, 'get_2d_filter_H'):
+            raise ValueError("This filter does not support wavelet decomposition.")
+        device = x.device
+        dtype = x.dtype
+
+        filters = {
+            'LL': self.filter_object.get_2d_filter().type(dtype),
+            'LH': self.filter_object.get_2d_filter_H().type(dtype),
+            'HL': self.filter_object.get_2d_filter_V().type(dtype),
+            'HH': self.filter_object.get_2d_filter_D().type(dtype)
+        }
+
+        components = {}
+        for name, filt in filters.items():
+            filt = filt.to(dtype).unsqueeze(0).unsqueeze(0).to(device)
+            op = deepinv.physics.Downsampling(
+                target_shape, filter=filt, factor=self.factor, device=device, padding=self.padding
+            )
+            result = op.A(x.unsqueeze(0)) if x.dim() == 3 else op.A(x)
+            components[name] = result.squeeze(0) if x.dim() == 3 else result
+
+        return components'''
 
 
 # ==========================
@@ -158,6 +176,9 @@ class Daubechies8:
         k0 = torch.tensor([0.2304,0.7148,0.6309,-0.0280,-0.1870,0.0308,0.0329,-0.0106])
         return torch.outer(k0, k0)
 
+    def wavelet_type(self):
+        return 'db8'
+
 class Gaussian:
     def __str__(self):
         return 'gaussian'
@@ -175,7 +196,10 @@ class Haar:
         k0 = torch.tensor([1.0, 1.0])
         return torch.outer(k0, k0)
 
-    def get_2d_filter_H(self):
+    def wavelet_type(self):
+        return('haar')
+
+    '''def get_2d_filter_H(self):
         # Haar filter for horizontal direction
         k0 = torch.tensor([1.0, 1.0])
         k1 = torch.tensor([-1.0, 1.0])
@@ -190,7 +214,17 @@ class Haar:
     def get_2d_filter_D(self):
         # Haar filter for diagonal direction
         k1 = torch.tensor([-1.0, 1.0])
-        return torch.outer(k1, k1)
+        return torch.outer(k1, k1)'''
+
+class Symlet8:
+    def __str__(self):
+        return 'symlet8'
+
+    def get_2d_filter(self):
+        None
+
+    def wavelet_type(self):
+        return 'sym8'
 
 filter_classes = {
     "dirac": Dirac,
@@ -201,7 +235,9 @@ filter_classes = {
     "gaussian": Gaussian,
     "daubechies8": Daubechies8,
     "haar": Haar,
+    "symlet8": Symlet8
 }
+
 def create_filter(name):
     if name in filter_classes:
         return filter_classes[name]()
@@ -215,7 +251,7 @@ if __name__ == "__main__":
 
     filter = create_filter("haar")
     downsampler = DownsamplingTransfer(filter).to(device)
-    components = downsampler.to_coarse_wavelet(x, target_shape=(1, 3, 128, 128))
+    components = downsampler.to_coarse_wavelet(x)
 
     # Visualiser les composants
     deepinv.utils.plot(
