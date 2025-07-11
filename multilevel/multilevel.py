@@ -15,6 +15,7 @@ import numpy as np
 import matplotlib as mpl
 import scipy.io as sio
 import copy
+import pywt
 from multilevel.info_transfer import DownsamplingTransfer, create_filter
 from deepinv.physics import Physics, Downsampling
 
@@ -68,12 +69,12 @@ def MultiLevel(xk, level_max, levels, args_multilevel, param_regularization, cst
     coherence = step_size*coherence.to(device)
     x0_coarse = xk_coarse.clone()
     step_coarse = 1
-    
-    """ 
+
+    """
     Optimize at coarse level
     """
     with torch.no_grad():
-        for k in range(param_coarse_iter):
+        for k in range(param_coarse_iter): # Pourquoi l'appel récursif est dans la boucle ??
             if levels > 1 and k < max_ML_steps:
                 xk_coarse = MultiLevel(xk_coarse, level_max, levels-1, args_multilevel, param_reg_coarse, cst_grad) # Recursive call if levels > 1
 
@@ -86,11 +87,94 @@ def MultiLevel(xk, level_max, levels, args_multilevel, param_regularization, cst
                 xk_coarse = xk_coarse -coherence \
                     - step_size*data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics) \
                     - step_size*grad_prior(xk_coarse, param_reg_coarse) # Coarse gradient descent
-            
+
     # Coarse correction
     coarse_correction = xk_coarse - x0_coarse
     coarse_correction = information_transfer.to_fine(coarse_correction, xk.shape[-3:])
     xk, step_coarse = ML_linesearch(xk, level_max, levels+1, coarse_correction, cst_grad_fine, data_fidelity, observation, physics, grad_prior, denoiser, prior, param_reg_fine,  step_coarse*2)
+    # xk = xk + step_coarse* coarse_correction
+    # print(f"Step size at level {levels}: {step_coarse}")
+    return xk
+
+def MultiLevelWavelets(xk, level_max, levels, args_multilevel, param_regularization, cst_grad=None ,  device = 'cpu'):
+    """
+    Multilevel step for image reconstruction
+    """
+    if not isinstance(args_multilevel, ParametersMultilevel):
+        raise ValueError("args_multilevel must be an instance of ParametersMultilevel")
+    if levels < 1:
+        return xk
+    # xk: current image
+    # information_transfer: function to transfer information between levels
+    # levels: number of levels
+    # param_iter: number of iterations at coarse level
+    # data_fidelity: data fidelity term
+    # cst_grad: first order coherence term from previous level
+    """
+    Unpack parameters for readability
+    """
+    data_fidelity = args_multilevel.data_fidelity
+    prior = args_multilevel.prior
+    grad_prior = args_multilevel.grad_prior
+    denoiser = args_multilevel.denoiser
+    step_size = args_multilevel.step_size
+    param_coarse_iter = args_multilevel.param_coarse_iter
+    physics = args_multilevel.physics
+    max_ML_steps = args_multilevel.max_ML_steps
+    coarse_physics = args_multilevel.coarse_physics
+    observations = args_multilevel.observations
+    information_transfer = copy.deepcopy(args_multilevel.information_transfer)
+    information_transfer._initialize_operator(xk, xk.shape[-3:])
+    observation = observations[f"level{levels+1}"]
+    physics = coarse_physics[f"level{levels+1}"]
+    coarse_observation = observations[f"level{levels}"]
+    coarse_physics = coarse_physics[f"level{levels}"]
+    param_reg_fine = param_regularization
+    if isinstance(prior, dinv.optim.prior.PnP):
+        param_reg_coarse = param_reg_fine
+    else:
+        param_reg_coarse = param_reg_fine / 4
+    """
+    Send information to the coarse level
+    """
+    if cst_grad is None:
+        cst_grad_fine = None
+    else:
+        cst_grad_fine = cst_grad.clone()
+    components = information_transfer.to_coarse_wavelet(xk)
+    xk_coarse = components['LL']
+    LH, HL, HH = components['LH'], components['HL'], components['HH']
+    x0_coarse = xk_coarse.clone()
+    step_coarse = 1
+
+    """
+    Optimize at coarse level
+    """
+    with torch.no_grad():
+        for k in range(param_coarse_iter):
+            print(f"Coarse level {levels}, iteration {k+1}/{param_coarse_iter}")
+            if levels > 1 and k < max_ML_steps:
+                xk_coarse = MultiLevelWavelets(xk_coarse, level_max, levels-1, args_multilevel, param_reg_coarse, cst_grad) # Recursive call if levels > 1
+
+            if isinstance(prior, dinv.optim.prior.PnP):
+                xk_coarse = prior.denoiser(
+                    xk_coarse - step_size*data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics),
+                    param_reg_coarse
+                )
+            else:
+                xk_coarse = xk_coarse - step_size*data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics) \
+                    - step_size*grad_prior(xk_coarse, param_reg_coarse) # Coarse gradient descent
+                LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
+                LH, HL, HH = conditional_thresholding({'LH': LH, 'HL': HL, 'HH': HH}, xk_coarse, param_reg_coarse)
+
+                #dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
+
+    # Coarse correction
+    coarse_correction = xk_coarse - x0_coarse
+    coarse_correction_components = {'LL': coarse_correction, 'LH': LH, 'HL': HL, 'HH': HH}
+    coarse_correction_fine = information_transfer.to_fine_wavelet(coarse_correction_components)
+    cst_grad_fine = torch.zeros_like(coarse_correction_fine) if cst_grad_fine is None else cst_grad_fine
+    xk, step_coarse = ML_linesearch(xk, level_max, levels+1, coarse_correction_fine, cst_grad_fine, data_fidelity, observation, physics, grad_prior, denoiser, prior, param_reg_fine,  step_coarse*2)
     # xk = xk + step_coarse* coarse_correction
     # print(f"Step size at level {levels}: {step_coarse}")
     return xk
@@ -119,11 +203,11 @@ class ParametersMultilevel:
         self.observations = create_coarse_observations(observation, info_transfer, levels, device)
         self.coarse_physics = create_coarse_physics(physics, target_shape, levels, info_transfer, device)
         self.grad_prior = create_grad_prior(prior, denoiser, device)
-        
+
         # self.gammas = {f'level{i}': self.default_gamma(i) for i in range(1, levels + 1)}
 
 
-    
+
 def create_information_transfer(filter, device):
     """
     Create the information transfer object
@@ -162,7 +246,7 @@ def create_coarse_physics(physics, img_shape, levels, filter, device):
     return coarse_physics
 
 
-    
+
 class Residual(nn.Module):
     def __init__(self, denoiser, prior):
         super().__init__()
@@ -179,7 +263,7 @@ class Residual(nn.Module):
             return 1/8 * gamma * self.prior.nabla_adjoint( Dx - self.l12prior.prox(Dx,gamma) )
         else:
             return (x - self.denoiser(x, gamma=[gamma]) )
-    
+
 def create_grad_prior(prior, denoiser, device): # ajouter option coherence pour la choisir
     """
     Create the gradient prior: automatically define the gradient of the smoothed fine level prior
@@ -203,12 +287,12 @@ class MultilevelPhysics(Physics):
         self.base = physics
         self.scale = scale
         self.img_shape = img_shape
-        self.Upsampling = Upsampling(img_size=img_shape, filter=filter, factor=scale, device=device) 
+        self.Upsampling = Upsampling(img_size=img_shape, filter=filter, factor=scale, device=device)
     def A(self, x, **kwargs):
             return self.Upsampling.Downsample(self.base.A(self.Upsampling.Upsample(x), **kwargs))
     def A_adjoint(self, y,**kwargs):
             return self.Upsampling.Downsample(self.base.A_adjoint(self.Upsampling.Upsample(y), **kwargs))
-    
+
 def compute_coherence(xk, xk_coarse, information_transfer, data_fidelity, grad_prior, cst_grad, physics, coarse_physics, observation, coarse_observation, reg_fine, reg_coarse):
     """
     Compute the coherence term for the multilevel optimization
@@ -223,7 +307,7 @@ def compute_coherence(xk, xk_coarse, information_transfer, data_fidelity, grad_p
         gradient_fine_level =data_fidelity.grad(xk, observation, physics) +  grad_prior(xk, reg_fine)
         cst_grad = information_transfer.to_coarse(cst_grad, xk.shape[-3:])
         coherence = information_transfer.to_coarse(gradient_fine_level, xk.shape[-3:]) + cst_grad \
-        - data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics) 
+        - data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
         - grad_prior(xk_coarse, reg_coarse)
     return cst_grad, coherence
 
@@ -267,9 +351,31 @@ def ML_linesearch(xk, level_max, levels, coarse_correction, coherence, data_fide
                 Dxk = prior.nabla(x_corrected)
         return x_corrected, step_coarse
     else:
-        f_current = data_fidelity(xk, observation, physics) 
+        f_current = data_fidelity(xk, observation, physics)
         x_corrected = xk + step_coarse * coarse_correction
         while data_fidelity(x_corrected, observation, physics)> f_current:
             step_coarse /= 2
             x_corrected = xk + step_coarse * coarse_correction # Apply the step size
         return x_corrected, step_coarse
+
+def conditional_thresholding(details, approx, global_threshold):
+    device, dtype = approx.device, approx.dtype
+
+    l1_prior = dinv.optim.L1Prior()
+
+    LH = details['LH']
+    HL = details['HL']
+    HH = details['HH']
+
+    stationnary_transform = pywt.swt2(approx.cpu().numpy(), wavelet='sym8', level=1)
+    grad_LH, grad_HL, grad_HH = stationnary_transform[0][1][0], stationnary_transform[0][1][1], stationnary_transform[0][1][2]
+
+    grad_LH = torch.tensor(grad_LH, device=device, dtype=dtype)
+    grad_HL = torch.tensor(grad_HL, device=device, dtype=dtype)
+    grad_HH = torch.tensor(grad_HH, device=device, dtype=dtype)
+
+    LH = l1_prior.prox(LH, global_threshold / grad_LH)
+    HL = l1_prior.prox(HL, global_threshold / grad_HL)
+    HH = l1_prior.prox(HH, global_threshold / grad_HH)
+
+    return LH, HL, HH

@@ -22,6 +22,7 @@ class DownsamplingTransfer:
         filt_2d = self._getfilter().type(dtype)
 
         padding = "valid" if isinstance(self.filter_object, Dirac) else self.padding
+        self.wavelet_type = self.filter_object.wavelet_type() if hasattr(self.filter_object, 'wavelet_type') else None
 
         self.op = deepinv.physics.Downsampling(
             target_shape, filter=filt_2d, factor=self.factor, device=device, padding=padding
@@ -63,7 +64,7 @@ class DownsamplingTransfer:
 
         return components
 
-    def to_fine_wavelet(self, components, wavelet):
+    def to_fine_wavelet(self, components):
         LL = components['LL'].cpu().numpy()
         LH = components['LH'].cpu().numpy()
         HL = components['HL'].cpu().numpy()
@@ -71,7 +72,7 @@ class DownsamplingTransfer:
 
         coeffs = (LL, (LH, HL, HH))
 
-        reconstructed = pywt.idwt2(coeffs, wavelet)
+        reconstructed = pywt.idwt2(coeffs, self.wavelet_type, mode='periodization')
         reconstructed = torch.from_numpy(reconstructed)
 
         return reconstructed
