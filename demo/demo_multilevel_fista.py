@@ -52,7 +52,7 @@ y = physics(x_true)
 yML = y.clone()
 back = physics.A_adjoint(y)
 
-# dinv.utils.plot([x_true, y, back], titles=['original','observation','backprojection']) 
+# dinv.utils.plot([x_true, y, back], titles=['original','observation','backprojection'])
 
 
 
@@ -72,7 +72,7 @@ args_algo = "FISTA"
 # args_algo = "FB"
 
 
-if args_prior == "TV":  
+if args_prior == "TV":
     criterion = 1e-5
     n_it_max = 50
     prior = dinv.optim.TVPrior(def_crit=criterion, n_it_max=n_it_max)
@@ -108,7 +108,7 @@ levels          = 4                  # number of levels
 param_coarse_iter = 5                # number of iterations at coarse level
 max_multilevel_iter = 5                # maximum number of  multilevel iterations at fine level
 cst_grad        = None                # only used at coarser levels. stays none at fine level.
-info_transfer  = "daubechies8"            # type of information transfer 
+info_transfer  = "daubechies8"            # type of information transfer
 # info_transfer : plot filter_classes
 
 
@@ -116,7 +116,7 @@ xk = back.clone()
 zk = back.clone()
 if isinstance(prior, dinv.optim.prior.PnP):
     x_denoiser = denoiser(xk, param_gamma*param_regularization)
-    initial_value = torch.zeros(1, device=device)   
+    initial_value = torch.zeros(1, device=device)
 else:
     initial_value = data_fidelity(xk, y, physics) + param_regularization * prior.fn(xk)
 
@@ -145,7 +145,7 @@ with torch.no_grad():
         else:
             zk = xk + ( ((k + a) / a )**d -1 ) / ((k+1+a)/a )**d * (xk - xk_prev)
 
-if args_prior == "TV":  
+if args_prior == "TV":
     prior = dinv.optim.TVPrior(def_crit=criterion, n_it_max=n_it_max)
     denoiser = prior.prox
 elif args_prior == "Wavelet":
@@ -174,9 +174,6 @@ with torch.no_grad():
             print((k)/(k+1+a))
             print(( ((k + a) / a )**d -1 ) / ((k+1+a)/a )**d)
             zk = xk + ( ((k + a) / a )**d -1 ) / ((k+1+a)/a )**d * (xk - xk_prev)
-
-
-
 
 
 # Compute some metrics

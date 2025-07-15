@@ -29,6 +29,7 @@ print(f'device is {device}')
 
 # Download an image
 x_true = dinv.utils.load_url_image(url=dinv.utils.get_image_url("butterfly.png"), img_size=256).to(device)
+x_true = dinv.utils.load_url_image(url=dinv.utils.get_image_url("cameraman.png"), img_size=512, grayscale=True).to(device)
 # x_true = x_true[:, :, ::4, ::4]  # downsample by a factor of 4
 # Define the Forward Operator: study case of deblurring + Gaussian noise
 #-----------------------------------------------------------------------
@@ -83,7 +84,9 @@ elif args_prior == "Wavelet":
 
 
 # Define regularization parameter
-param_regularization    = 2*sigma**2
+
+#param_regularization    = 2*sigma**2
+param_regularization = 1e-4
 
 # Define algorithm parameters
 random_tensor   = torch.randn(x_true.shape).to(device)
@@ -130,7 +133,7 @@ with torch.no_grad():
     for k in range(param_iter):
         xk_prev = xk.clone()
         if k<max_multilevel_iter:
-            zk = MultiLevelWavelets(zk, levels, levels-1, args_multilevel, param_regularization,cst_grad, device)
+            zk = MultiLevelWavelets(zk, levels, levels-1, args_multilevel, param_regularization, cst_grad, device)
         xk = zk - param_gamma*data_fidelity.grad(zk, y, physics)
         if isinstance(prior, dinv.optim.TVPrior):
             xk = prior.prox(xk, gamma = param_gamma*param_regularization)
@@ -144,6 +147,8 @@ with torch.no_grad():
             zk = xk
         else:
             zk = xk + ( ((k + a) / a )**d -1 ) / ((k+1+a)/a )**d * (xk - xk_prev)
+
+x_est_ml = xk.clone()
 
 if args_prior == "TV":
     prior = dinv.optim.TVPrior(def_crit=criterion, n_it_max=n_it_max)
@@ -176,14 +181,11 @@ with torch.no_grad():
             zk = xk + ( ((k + a) / a )**d -1 ) / ((k+1+a)/a )**d * (xk - xk_prev)
 
 
-
-
-
 # Compute some metrics
 crit_min = min(np.min(crit_ML),np.min(crit_SL))
 
 # Display results
-dinv.utils.plot([x_true, y, xk], titles=['original','observation','restored'],figsize=[6,6])
+dinv.utils.plot([x_true, y, xk, x_est_ml], titles=['original','observation',f'restored with {args_prior} prior', 'restored with ML'],figsize=[6,6])
 fig, axs = plt.subplots(1, 3, figsize=(10, 4))  # 2 lignes, 1 colonne
 axs[0].plot(np.concatenate((np.array(initial_value),crit_ML))/initial_value-crit_min*1.00001/initial_value, label='Multi-Level')
 axs[0].plot(np.concatenate((np.array(initial_value),crit_SL))/initial_value-crit_min*1.00001/initial_value, label='Single-Level')

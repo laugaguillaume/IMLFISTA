@@ -164,10 +164,10 @@ def MultiLevelWavelets(xk, level_max, levels, args_multilevel, param_regularizat
             else:
                 xk_coarse = xk_coarse - step_size*data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics) \
                     - step_size*grad_prior(xk_coarse, param_reg_coarse) # Coarse gradient descent
-                LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
-                LH, HL, HH = conditional_thresholding({'LH': LH, 'HL': HL, 'HH': HH}, xk_coarse, param_reg_coarse)
+        LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
+        LH, HL, HH = conditional_thresholding({'LH': LH, 'HL': HL, 'HH': HH}, xk_coarse, global_threshold=param_reg_coarse)
 
-                #dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
+        #dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
 
     # Coarse correction
     coarse_correction = xk_coarse - x0_coarse
