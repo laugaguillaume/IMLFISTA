@@ -99,7 +99,7 @@ elif args_algo == "FB":
     param_gamma_ML = param_gamma
 
 
-param_iter      = 100                # number of iterations
+param_iter      = 100000                # number of iterations
 a               = 2.1                # inertia parameter
 
 # Define multilevel parameters
@@ -145,6 +145,8 @@ with torch.no_grad():
         else:
             zk = xk + ( ((k + a) / a )**d -1 ) / ((k+1+a)/a )**d * (xk - xk_prev)
 
+x_est_ml = xk.clone()
+
 if args_prior == "TV":
     prior = dinv.optim.TVPrior(def_crit=criterion, n_it_max=n_it_max)
     denoiser = prior.prox
@@ -180,7 +182,10 @@ with torch.no_grad():
 crit_min = min(np.min(crit_ML),np.min(crit_SL))
 
 # Display results
-dinv.utils.plot([x_true, y, xk], titles=['original','observation','restored'],figsize=[6,6])
+psnrs = np.array([perf_psnr(x_true, xk).item() for xk in [y, x_est_ml, xk]])
+psnrs = np.round(psnrs, 2)
+dinv.utils.plot([x_true, y, xk, x_est_ml], titles=['original',f'observation\n PSNR: {psnrs[0]}',f'restored (SL)\n PSNR: {psnrs[1]}', f'restored (ML)\n PSNR: {psnrs[2]}'],figsize=[6,6])
+
 fig, axs = plt.subplots(1, 3, figsize=(10, 4))  # 2 lignes, 1 colonne
 axs[0].plot(np.concatenate((np.array(initial_value),crit_ML))/initial_value-crit_min*1.00001/initial_value, label='Multi-Level')
 axs[0].plot(np.concatenate((np.array(initial_value),crit_SL))/initial_value-crit_min*1.00001/initial_value, label='Single-Level')
