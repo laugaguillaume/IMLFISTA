@@ -16,6 +16,7 @@ import scipy.io as sio
 import copy
 from deepinv.loss.metric import PSNR
 from multilevel.multilevel import ParametersMultilevel, MultiLevel
+from tqdm import tqdm
 perf_psnr = PSNR()
 
 # Define device
@@ -64,8 +65,8 @@ back = physics.A_adjoint(y)
 data_fidelity = dinv.optim.L2()
 
 # Define prior
-# args_prior = "TV"
-args_prior = "Wavelet"
+args_prior = "TV"
+#args_prior = "Wavelet"
 
 # Define single level algorithm
 args_algo = "FISTA"
@@ -83,7 +84,8 @@ elif args_prior == "Wavelet":
 
 
 # Define regularization parameter
-param_regularization    = 2*sigma**2
+#param_regularization = 2*sigma**2
+param_regularization = 1e-5
 
 # Define algorithm parameters
 random_tensor   = torch.randn(x_true.shape).to(device)
@@ -99,7 +101,7 @@ elif args_algo == "FB":
     param_gamma_ML = param_gamma
 
 
-param_iter      = 100000                # number of iterations
+param_iter      = 1000                # number of iterations
 a               = 2.1                # inertia parameter
 
 # Define multilevel parameters
@@ -127,7 +129,7 @@ args_multilevel = ParametersMultilevel(target_shape = x_true.shape[-3:], levels 
 crit_ML = 1e10*np.ones(param_iter)
 psnr_ML = 1e10*np.ones(param_iter)
 with torch.no_grad():
-    for k in range(param_iter):
+    for k in tqdm(range(param_iter)):
         xk_prev = xk.clone()
         if k<max_multilevel_iter:
             zk = MultiLevel(zk, levels, levels-1, args_multilevel, param_regularization,cst_grad, device)
@@ -182,12 +184,12 @@ with torch.no_grad():
 crit_min = min(np.min(crit_ML),np.min(crit_SL))
 
 # Display results
-psnrs = np.array([perf_psnr(x_true, xk).item() for xk in [y, x_est_ml, xk]])
+psnrs = np.array([perf_psnr(x_true, xk).item() for xk in [y, xk, x_est_ml]])
 psnrs = np.round(psnrs, 2)
 dinv.utils.plot([x_true, y, xk, x_est_ml], titles=['original',f'observation\n PSNR: {psnrs[0]}',f'restored (SL)\n PSNR: {psnrs[1]}', f'restored (ML)\n PSNR: {psnrs[2]}'],figsize=[6,6])
 
 fig, axs = plt.subplots(1, 3, figsize=(10, 4))  # 2 lignes, 1 colonne
-axs[0].plot(np.concatenate((np.array(initial_value),crit_ML))/initial_value-crit_min*1.00001/initial_value, label='Multi-Level')
+axs[0].plot(np.concatenate((np.array(initial_value),crit_ML))/initial_value-crit_min*1.00001/initial_value, label='Multi-Level')  # ED : à quoi ça sert de diviser par initial_value ?
 axs[0].plot(np.concatenate((np.array(initial_value),crit_SL))/initial_value-crit_min*1.00001/initial_value, label='Single-Level')
 axs[0].set_yscale('log')
 axs[0].legend()
@@ -196,10 +198,23 @@ axs[1].plot(np.concatenate((np.array(initial_value),crit_ML)), label='Multi-Leve
 axs[1].plot(np.concatenate((np.array(initial_value),crit_SL)), label='Single-Level')
 axs[1].set_yscale('log')
 axs[1].legend()
-# axs[1].set_title('Log objective function w.r.t iterations')
+axs[1].set_title('Log objective function w.r.t iterations')
 axs[2].plot(np.concatenate((np.array([initial_snr_value]),psnr_ML)), label='Multi-Level')
 axs[2].plot(np.concatenate((np.array([initial_snr_value]),psnr_SL)), label='Single-Level')
 axs[2].legend()
 axs[2].set_title('PSNR function w.r.t iterations')
+plt.tight_layout()
+plt.show()
+
+print(f"Final value of the objective function for ML: {crit_ML[-1]}\n Final value of the objective function for SL: {crit_SL[-1]}")
+
+diff_obj_fun = crit_ML - crit_SL
+plt.figure(figsize=(10, 4))
+plt.plot(diff_obj_fun, label='Difference in objective function (ML - SL)')
+plt.axhline(0, color='red', linestyle='--', label='Zero Line')
+plt.xlabel('Iteration')
+plt.ylabel('Difference in Objective Function')
+plt.title(f'Difference in Objective Function between ML and SL\n Last value: {diff_obj_fun[-1]:.4f}')
+plt.legend()
 plt.tight_layout()
 plt.show()
