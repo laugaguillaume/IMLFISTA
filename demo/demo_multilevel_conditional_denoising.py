@@ -14,6 +14,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import scipy.io as sio
 import copy
+import time
 from deepinv.loss.metric import PSNR
 from deepinv.models import Denoiser
 from multilevel.multilevel import ParametersMultilevel, MultiLevelWavelets, MultiLevel, WaveletDenoiserConditional
@@ -74,13 +75,13 @@ args_prior = "TV"
 # args_prior = "Wavelet"
 
 # Define single level algorithm
-# args_algo = "FISTA"
-args_algo = "FB"
+args_algo = "FISTA"
+# args_algo = "FB"
 
 
 if args_prior == "TV":
     criterion = 1e-5
-    n_it_max = 100
+    n_it_max = 50
     prior = dinv.optim.TVPrior(def_crit=criterion, n_it_max=n_it_max)
     denoiser = prior.prox
 elif args_prior == "Wavelet":
@@ -107,7 +108,7 @@ elif args_algo == "FB":
     param_gamma_ML = param_gamma
 
 
-param_iter = 100  # number of iterations
+param_iter = 1000  # number of iterations
 a = 2.1  # inertia parameter
 
 # Define multilevel parameters
@@ -166,16 +167,8 @@ with torch.no_grad():
         xk = zk - param_gamma * data_fidelity.grad(zk, y, physics)
 
         # Careful : what prior do we want to use here ?
-        denoiser = WaveletDenoiserConditional(level=levels, wv="db8", device=device, non_linearity="soft")
-        xk = denoiser(xk, gamma=param_regularization * param_gamma)
-        if isinstance(prior, dinv.optim.TVPrior):
-            None
-            #xk = prior.prox(xk, gamma=param_gamma * param_regularization)
-            # crit_ML[k] = data_fidelity(xk, y, physics) + param_regularization * prior.fn(xk)
-        else:
-            None
-            #xk = prior.prox(xk, gamma=[param_gamma * param_regularization])
-            # crit_ML[k] = data_fidelity(xk, y, physics) + param_regularization * prior.fn(xk)
+        denoiser_cond = WaveletDenoiserConditional(level=levels, wv="db8", device=device, non_linearity="soft")
+        xk = denoiser_cond(xk, gamma=param_regularization * param_gamma)
 
         psnr_ML_cond[k] = perf_psnr(x_true, xk).item()
 
@@ -296,6 +289,20 @@ with torch.no_grad():
         diff_SL.append(torch.norm(xk - xk_prev).item())
 
 # ---- Display results ----
+
+# Plot ML vs SL crit
+plt.figure(figsize=(10, 5))
+plt.plot(crit_ML, linestyle="-", color="blue", label="ML")
+plt.plot(crit_SL, linestyle="--", color="green", label="SL")
+plt.title("Convergence of ML and SL Algorithms")
+plt.xlabel("Iteration")
+plt.ylabel(r"$\|x_k - x_{k-1}\|_2$")
+plt.yscale("log")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
+
 
 plt.figure(figsize=(10, 5))
 plt.plot(diff_ML, linestyle="-", color="blue", label="ML")

@@ -99,7 +99,7 @@ def MultiLevel(
     with torch.no_grad():
         for k in range(
             param_coarse_iter
-        ):  # Pourquoi l'appel récursif est dans la boucle ??
+        ):
             if levels > 1 and k < max_ML_steps:
                 xk_coarse = MultiLevel(
                     xk_coarse,
@@ -209,12 +209,28 @@ def MultiLevelWavelets(
     x0_coarse = xk_coarse.clone()
     step_coarse = 1
 
+    # COHERENCE TERM
+    cst_grad, coherence = compute_coherence(
+        xk,
+        xk_coarse,
+        information_transfer,
+        data_fidelity,
+        grad_prior,
+        cst_grad,
+        physics,
+        coarse_physics,
+        observation,
+        coarse_observation,
+        param_reg_fine,
+        param_reg_coarse,
+    )
+    coherence = step_size * coherence.to(device)
+
     """
     Optimize at coarse level
     """
     with torch.no_grad():
         for k in range(param_coarse_iter):
-            print(f"Coarse level {levels}, iteration {k+1}/{param_coarse_iter}")
             if levels > 1 and k < max_ML_steps:
                 xk_coarse = MultiLevelWavelets(
                     xk_coarse,
@@ -228,6 +244,7 @@ def MultiLevelWavelets(
             if isinstance(prior, dinv.optim.prior.PnP):
                 xk_coarse = prior.denoiser(
                     xk_coarse
+                    #- coherence
                     - step_size
                     * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics),
                     param_reg_coarse,
@@ -235,9 +252,10 @@ def MultiLevelWavelets(
             else:
                 xk_coarse = (
                     xk_coarse
+                    #- coherence
                     - step_size
                     * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
-                    - step_size * grad_prior(xk_coarse, param_reg_coarse)
+                    #- step_size * grad_prior(xk_coarse, param_reg_coarse)
                 )  # Coarse gradient descent
         LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
         LH, HL, HH = conditional_thresholding(
@@ -412,10 +430,7 @@ class Residual(nn.Module):
             Dx = self.prior.nabla(
                 x
             )  # The TV operator is not normalized, so Lipschit constant is ||D||_2^2 = 8
-            return (
-                1
-                / 8
-                * gamma
+            return (1/8 * gamma
                 * self.prior.nabla_adjoint(Dx - self.l12prior.prox(Dx, gamma))
             )
         else:
@@ -627,9 +642,13 @@ def conditional_thresholding(details, approx, global_threshold):
     grad_HL = torch.tensor(grad_HL, device=device, dtype=dtype)
     grad_HH = torch.tensor(grad_HH, device=device, dtype=dtype)
 
-    LH = l1_prior.prox(LH, global_threshold / grad_LH)
+    '''LH = l1_prior.prox(LH, global_threshold / grad_LH)
     HL = l1_prior.prox(HL, global_threshold / grad_HL)
-    HH = l1_prior.prox(HH, global_threshold / grad_HH)
+    HH = l1_prior.prox(HH, global_threshold / grad_HH)'''
+
+    LH = l1_prior.prox(LH, global_threshold)
+    HL = l1_prior.prox(HL, global_threshold)
+    HH = l1_prior.prox(HH, global_threshold)
 
     return LH, HL, HH
 
@@ -679,9 +698,6 @@ class WaveletDenoiserConditional(Denoiser):
         coeffs_thresholded = [copy.deepcopy(approx)]
 
         for current_lvl in range(self.level):
-            print(
-                f"Processing level {current_lvl + 1}/{self.level}\n Approx shape: {approx.shape}, Details shape: {[d.shape for d in details[current_lvl]]}"
-            )
             gamma_level = gamma / (2 ** (self.level - current_lvl))
 
             stationnary_transform = pywt.swt2(
@@ -698,10 +714,12 @@ class WaveletDenoiserConditional(Denoiser):
             grad_HL = torch.tensor(grad_HL, device=self.device)
             grad_HH = torch.tensor(grad_HH, device=self.device)
 
-            gamma_LH = gamma_level / torch.abs(grad_LH)
+            '''gamma_LH = gamma_level / torch.abs(grad_LH)
             gamma_HL = gamma_level / torch.abs(grad_HL)
             gamma_HH = gamma_level / torch.abs(grad_HH)
-            gammas = [gamma_LH, gamma_HL, gamma_HH]
+            gammas = [gamma_LH, gamma_HL, gamma_HH]'''
+            gamma_level_tensor = torch.ones_like(grad_LH) * gamma_level
+            gammas = [gamma_level_tensor] * 3  # Same gamma for all details
 
             details_thresholded = []
             for c in range(3):
