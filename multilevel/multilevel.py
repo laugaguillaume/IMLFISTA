@@ -435,6 +435,11 @@ class Residual(nn.Module):
             )
         else:
             return x - self.denoiser(x, gamma=[gamma])
+        '''if isinstance(self.prior, dinv.optim.WaveletPrior):
+            return (
+
+            )'''
+
 
 
 def create_grad_prior(
@@ -642,13 +647,13 @@ def conditional_thresholding(details, approx, global_threshold):
     grad_HL = torch.tensor(grad_HL, device=device, dtype=dtype)
     grad_HH = torch.tensor(grad_HH, device=device, dtype=dtype)
 
-    '''LH = l1_prior.prox(LH, global_threshold / grad_LH)
+    LH = l1_prior.prox(LH, global_threshold / grad_LH)
     HL = l1_prior.prox(HL, global_threshold / grad_HL)
-    HH = l1_prior.prox(HH, global_threshold / grad_HH)'''
+    HH = l1_prior.prox(HH, global_threshold / grad_HH)
 
-    LH = l1_prior.prox(LH, global_threshold)
+    '''LH = l1_prior.prox(LH, global_threshold)
     HL = l1_prior.prox(HL, global_threshold)
-    HH = l1_prior.prox(HH, global_threshold)
+    HH = l1_prior.prox(HH, global_threshold)'''
 
     return LH, HL, HH
 

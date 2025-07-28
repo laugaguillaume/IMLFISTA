@@ -65,8 +65,8 @@ back = physics.A_adjoint(y)
 data_fidelity = dinv.optim.L2()
 
 # Define prior
-args_prior = "TV"
-#args_prior = "Wavelet"
+# args_prior = "TV"
+args_prior = "Wavelet"
 
 # Define single level algorithm
 args_algo = "FISTA"
@@ -84,8 +84,8 @@ elif args_prior == "Wavelet":
 
 
 # Define regularization parameter
-#param_regularization = 2*sigma**2
-param_regularization = 1e-5
+# param_regularization = 2*sigma**2
+param_regularization = 1e-2
 
 # Define algorithm parameters
 random_tensor   = torch.randn(x_true.shape).to(device)

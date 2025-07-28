@@ -91,7 +91,7 @@ elif args_prior == "Wavelet":
 
 # Define regularization parameter
 
-# param_regularization = 2*sigma**2
+#param_regularization = 2*sigma**2
 param_regularization = 1e-6
 
 # Define algorithm parameters
@@ -108,7 +108,7 @@ elif args_algo == "FB":
     param_gamma_ML = param_gamma
 
 
-param_iter = 1000  # number of iterations
+param_iter = 35  # number of iterations
 a = 2.1  # inertia parameter
 
 # Define multilevel parameters
@@ -166,7 +166,7 @@ with torch.no_grad():
             )
         xk = zk - param_gamma * data_fidelity.grad(zk, y, physics)
 
-        # Careful : what prior do we want to use here ?
+        # Using custom denoiser as "prox"
         denoiser_cond = WaveletDenoiserConditional(level=levels, wv="db8", device=device, non_linearity="soft")
         xk = denoiser_cond(xk, gamma=param_regularization * param_gamma)
 
@@ -294,9 +294,9 @@ with torch.no_grad():
 plt.figure(figsize=(10, 5))
 plt.plot(crit_ML, linestyle="-", color="blue", label="ML")
 plt.plot(crit_SL, linestyle="--", color="green", label="SL")
-plt.title("Convergence of ML and SL Algorithms")
+plt.title("Convergence of ML and SL Algorithms : objective function")
 plt.xlabel("Iteration")
-plt.ylabel(r"$\|x_k - x_{k-1}\|_2$")
+plt.ylabel("Objective Function Value")
 plt.yscale("log")
 plt.grid(True)
 plt.legend()
@@ -345,3 +345,5 @@ dinv.utils.plot(
     ],
     cmap="gray",
 )
+
+print(f"Final value the difference in objective function: {crit_ML[-1] - crit_SL[-1]}")
