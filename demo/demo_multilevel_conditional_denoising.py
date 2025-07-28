@@ -33,9 +33,9 @@ print(f"device is {device}")
 # x_true = image_file.unsqueeze(0).to(torch.float32).to(device)/255
 
 # Download an image
-x_true = dinv.utils.load_url_image(
-    url=dinv.utils.get_image_url("butterfly.png"), img_size=256
-).to(device)
+file_name = "butterfly.png"
+url = f"https://huggingface.co/datasets/deepinv/images/resolve/main/{file_name}?download=true"
+x_true = dinv.utils.load_url_image(url=url, img_size=256).to(device)
 # x_true = dinv.utils.load_url_image(url=dinv.utils.get_image_url("cameraman.png"), img_size=512, grayscale=True).to(device)
 # x_true = x_true[:, :, ::4, ::4]  # downsample by a factor of 4
 # Define the Forward Operator: study case of deblurring + Gaussian noise
