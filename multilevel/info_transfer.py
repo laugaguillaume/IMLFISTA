@@ -48,6 +48,9 @@ class DownsamplingTransfer:
         return self.op.A_adjoint(x) * self.factor ** 2
 
     def to_coarse_wavelet(self, x):
+        """
+        Applies a wavelet decomposition to x and returns a dictionary of wavelet components.
+        """
         components = {}
         if not hasattr(self.filter_object, 'wavelet_type'):
             raise ValueError("This filter does not support wavelet decomposition.")
@@ -65,6 +68,9 @@ class DownsamplingTransfer:
         return components
 
     def to_fine_wavelet(self, components):
+        """
+        Applies the inverse wavelet transform and returns the reconstructed tensor.
+        """
         LL = components['LL'].cpu().numpy()
         LH = components['LH'].cpu().numpy()
         HL = components['HL'].cpu().numpy()
@@ -83,7 +89,7 @@ class DownsamplingTransfer:
             self.op.to(device)
         return self
 
-    # Peut-être qu'il vaudrait mieux utiliser pywt... On n'a pas W^T(Wx) = x :(
+    # Tentative de réimplémentation des ondelettes avec des convolutions. Mais on n'a pas W^T(Wx) = x... On utilise donc la méthode de pywt pour l'instant.
     '''def to_coarse_wavelet_conv(self, x, target_shape):
         if not hasattr(self.filter_object, 'get_2d_filter_H'):
             raise ValueError("This filter does not support wavelet decomposition.")
@@ -254,7 +260,7 @@ if __name__ == "__main__":
     downsampler = DownsamplingTransfer(filter).to(device)
     components = downsampler.to_coarse_wavelet(x)
 
-    # Visualiser les composants
+    # Visualize the wavelet components
     deepinv.utils.plot(
         [components['LL'], components['LH'], components['HL'], components['HH']],
         titles=['Approximation (LL)', 'Horizontal (LH)', 'Vertical (HL)', 'Diagonal (HH)'],

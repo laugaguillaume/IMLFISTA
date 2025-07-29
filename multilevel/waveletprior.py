@@ -5,6 +5,11 @@ import numpy as np
 from deepinv.models import WaveletDenoiser
 from deepinv.optim.prior import WaveletPrior
 
+"""
+This is an attempt to re-implement DeepInv'w WaveletDenoiser so it is able to handle the padding mode 'periodization'.
+This class does not work yet.
+"""
+
 class MyWaveletDenoiser(WaveletDenoiser):
     def __init__(
             self,

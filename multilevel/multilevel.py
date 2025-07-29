@@ -160,7 +160,7 @@ def MultiLevelWavelets(
     device="cpu",
 ):
     """
-    Multilevel step for image reconstruction
+    Multilevel step for image reconstruction with conditional wavelet thresholding.
     """
     if not isinstance(args_multilevel, ParametersMultilevel):
         raise ValueError("args_multilevel must be an instance of ParametersMultilevel")
