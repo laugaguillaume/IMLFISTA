@@ -719,12 +719,10 @@ class WaveletDenoiserConditional(Denoiser):
             grad_HL = torch.tensor(grad_HL, device=self.device)
             grad_HH = torch.tensor(grad_HH, device=self.device)
 
-            '''gamma_LH = gamma_level / torch.abs(grad_LH)
+            gamma_LH = gamma_level / torch.abs(grad_LH)
             gamma_HL = gamma_level / torch.abs(grad_HL)
             gamma_HH = gamma_level / torch.abs(grad_HH)
-            gammas = [gamma_LH, gamma_HL, gamma_HH]'''
-            gamma_level_tensor = torch.ones_like(grad_LH) * gamma_level
-            gammas = [gamma_level_tensor] * 3  # Same gamma for all details
+            gammas = [gamma_LH, gamma_HL, gamma_HH]
 
             details_thresholded = []
             for c in range(3):
@@ -750,6 +748,17 @@ class WaveletDenoiserConditional(Denoiser):
             approx = self.iwt([approx, details_thresholded])
 
         return self.iwt(coeffs_thresholded)
+
+    def prox_l0(
+        self, x: torch.Tensor, gamma=0.1
+    ):
+        """
+        Hard thresholding of the wavelet coefficients.
+        """
+
+        out = x.clone()
+        out[out.abs() < gamma] = 0
+        return out
 
 
 if __name__ == "__main__":
