@@ -34,7 +34,6 @@ file_name = "butterfly.png"
 # Download an image
 url = f"https://huggingface.co/datasets/deepinv/images/resolve/main/{file_name}?download=true"
 x_true = dinv.utils.load_url_image(url=url).to(device)
-print(f"Image shape: {x_true.shape}")
 
 # Define linear operator
 filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
