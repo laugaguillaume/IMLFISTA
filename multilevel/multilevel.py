@@ -203,28 +203,15 @@ def MultiLevelWavelets(
         cst_grad_fine = None
     else:
         cst_grad_fine = cst_grad.clone()
+
+    # Instead of only getting the approximation, we also get the detail coefficients
     components = information_transfer.to_coarse_wavelet(xk)
     xk_coarse = components["LL"]
     LH, HL, HH = components["LH"], components["HL"], components["HH"]
+
+    # Initialize the multilevel iteration with the approximation coefficients
     x0_coarse = xk_coarse.clone()
     step_coarse = 1
-
-    # COHERENCE TERM
-    cst_grad, coherence = compute_coherence(
-        xk,
-        xk_coarse,
-        information_transfer,
-        data_fidelity,
-        grad_prior,
-        cst_grad,
-        physics,
-        coarse_physics,
-        observation,
-        coarse_observation,
-        param_reg_fine,
-        param_reg_coarse,
-    )
-    coherence = step_size * coherence.to(device)
 
     """
     Optimize at coarse level
@@ -242,30 +229,33 @@ def MultiLevelWavelets(
                 )  # Recursive call if levels > 1
 
             if isinstance(prior, dinv.optim.prior.PnP):
+                # Coarse gradient descent but no coherence term (doesn't really make sense as we don't use ML PnP with our conditional thresholding)
                 xk_coarse = prior.denoiser(
                     xk_coarse
-                    #- coherence
                     - step_size
                     * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics),
                     param_reg_coarse,
                 )
             else:
+                # Coarse gradient descent but no coherence term nor grad prior
                 xk_coarse = (
                     xk_coarse
-                    #- coherence
                     - step_size
                     * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
-                    #- step_size * grad_prior(xk_coarse, param_reg_coarse)
-                )  # Coarse gradient descent
+                )
+        # Old coefficients if we need to compare
         LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
+        # Threshold the detail coefficients based on the reconstructed approximation
         LH, HL, HH = conditional_thresholding(
             {"LH": LH, "HL": HL, "HH": HH}, xk_coarse, global_threshold=param_reg_coarse
         )
 
+        # Plot: detail coefficients before vs after thresholding
         # dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
 
     # Coarse correction
     coarse_correction = xk_coarse - x0_coarse
+    # Question : should we do LH - LH0, HL - HL0, HH - HH0 ?
     coarse_correction_components = {
         "LL": coarse_correction,
         "LH": LH,
@@ -627,7 +617,24 @@ def ML_linesearch(
         return x_corrected, step_coarse
 
 
-def conditional_thresholding(details, approx, global_threshold):
+def conditional_thresholding(
+        details,
+        approx,
+        global_threshold
+        ):
+    """
+    Conditional thresholding of the wavelet coefficients based on the gradient of the approximation.
+    This function is used in the MultilevelWavelets class.
+
+    Parameters
+    ----------
+    details : dict
+        Dictionary containing the wavelet coefficients of the details (LH, HL, HH).
+    approx : torch.Tensor
+        The approximation coefficients of the wavelet transform.
+    global_threshold : float
+        The global threshold value for the wavelet coefficients, used to compute the other thresholds.
+    """
     device, dtype = approx.device, approx.dtype
 
     l1_prior = dinv.optim.L1Prior()
@@ -636,6 +643,7 @@ def conditional_thresholding(details, approx, global_threshold):
     HL = details["HL"]
     HH = details["HH"]
 
+    # Wavelet transform of the approximation without downsampling
     stationnary_transform = pywt.swt2(approx.cpu().numpy(), wavelet="sym8", level=1)
     grad_LH, grad_HL, grad_HH = (
         stationnary_transform[0][1][0],
@@ -647,18 +655,19 @@ def conditional_thresholding(details, approx, global_threshold):
     grad_HL = torch.tensor(grad_HL, device=device, dtype=dtype)
     grad_HH = torch.tensor(grad_HH, device=device, dtype=dtype)
 
+    # Thresholds are inversely proportional to the gradient
     LH = l1_prior.prox(LH, global_threshold / grad_LH)
     HL = l1_prior.prox(HL, global_threshold / grad_HL)
     HH = l1_prior.prox(HH, global_threshold / grad_HH)
-
-    '''LH = l1_prior.prox(LH, global_threshold)
-    HL = l1_prior.prox(HL, global_threshold)
-    HH = l1_prior.prox(HH, global_threshold)'''
 
     return LH, HL, HH
 
 
 class WaveletDenoiserConditional(Denoiser):
+    """
+    Wavelet denoising with conditional thresholding (inspired from DeepInv's WaveletDenoiser).
+    This function is implemented with PyWavelets and PyTorch, and is able to handle the padding mode 'periodization' for the wavelet transform.
+    """
     def __init__(
         self,
         level: int = 3,
@@ -695,16 +704,20 @@ class WaveletDenoiserConditional(Denoiser):
             x.cpu().numpy(), pywt.Wavelet(self.wv), mode=self.mode, level=self.level
         )
         coeffs = [torch.tensor(coeffs_np[0], device=self.device)]  # Approximation
-        for detail in coeffs_np[1:]:  # Details
+        for detail in coeffs_np[1:]:                               # Details
             coeffs.append(tuple(torch.tensor(c, device=self.device) for c in detail))
 
         approx = copy.deepcopy(coeffs[0])
         details = copy.deepcopy(coeffs[1:])
+
+        # Initialize the list of thresholded coefficients with the approximation (not modified)
         coeffs_thresholded = [copy.deepcopy(approx)]
 
         for current_lvl in range(self.level):
+            # Global threshold for the current level
             gamma_level = gamma / (2 ** (self.level - current_lvl))
 
+            # Wavelet transform of the approximation without downsampling
             stationnary_transform = pywt.swt2(
                 approx.cpu().numpy(), wavelet="sym8", level=1
             )
@@ -719,12 +732,14 @@ class WaveletDenoiserConditional(Denoiser):
             grad_HL = torch.tensor(grad_HL, device=self.device)
             grad_HH = torch.tensor(grad_HH, device=self.device)
 
+            # Thresholds are inversely proportional to the gradient
             gamma_LH = gamma_level / torch.abs(grad_LH)
             gamma_HL = gamma_level / torch.abs(grad_HL)
             gamma_HH = gamma_level / torch.abs(grad_HH)
             gammas = [gamma_LH, gamma_HL, gamma_HH]
 
             details_thresholded = []
+            # Threshold the 3 details coefficients
             for c in range(3):
                 if self.non_linearity == "soft":
                     details_thresholded.append(
@@ -745,6 +760,7 @@ class WaveletDenoiserConditional(Denoiser):
             details_thresholded = tuple(details_thresholded)
             coeffs_thresholded.append(details_thresholded)
 
+            # Reconstruct the approximation at the next scale with the thresholded details
             approx = self.iwt([approx, details_thresholded])
 
         return self.iwt(coeffs_thresholded)
@@ -755,7 +771,6 @@ class WaveletDenoiserConditional(Denoiser):
         """
         Hard thresholding of the wavelet coefficients.
         """
-
         out = x.clone()
         out[out.abs() < gamma] = 0
         return out
@@ -770,7 +785,7 @@ if __name__ == "__main__":
     ).to(torch.device("cpu"))
     y = x + 0.1 * torch.randn_like(x)  # Add noise for testing
 
-    denoiser = WaveletDenoiserConditional(level=3, wv="db8", device=torch.device("cpu"))
+    denoiser = WaveletDenoiserConditional(level=3, wv="db8", device=torch.device("cpu"), non_linearity="soft")
 
     x_est = denoiser.forward(y, gamma=0.08)
 
