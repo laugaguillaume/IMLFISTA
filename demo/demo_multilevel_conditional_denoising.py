@@ -29,6 +29,8 @@ print(f"device is {device}")
 
 #%% ----- Initialization -----
 
+file_name = "butterfly.png"
+
 # Download an image
 url = f"https://huggingface.co/datasets/deepinv/images/resolve/main/{file_name}?download=true"
 x_true = dinv.utils.load_url_image(url=url).to(device)
