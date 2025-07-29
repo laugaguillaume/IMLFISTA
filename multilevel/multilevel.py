@@ -734,7 +734,7 @@ class WaveletDenoiserConditional(Denoiser):
                     )
                 elif self.non_linearity == "hard":
                     details_thresholded.append(
-                        dinv.optim.L0Prior().prox(
+                        self.prox_l0(
                             details[current_lvl][c], gamma=gammas[c]
                         )
                     )
