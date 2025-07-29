@@ -27,29 +27,18 @@ plt.rcParams["text.usetex"] = True  # Activate LaTeX rendering
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"device is {device}")
 
-
-# image_path = "path_to_image/image.png"  # Replace with your image path
-# image_file = read_image(image_path)
-# x_true = image_file.unsqueeze(0).to(torch.float32).to(device)/255
+#%% ----- Initialization -----
 
 # Download an image
-file_name = "butterfly.png"
 url = f"https://huggingface.co/datasets/deepinv/images/resolve/main/{file_name}?download=true"
-x_true = dinv.utils.load_url_image(url=url, img_size=256).to(device)
-# x_true = dinv.utils.load_url_image(url=dinv.utils.get_image_url("cameraman.png"), img_size=512, grayscale=True).to(device)
-# x_true = x_true[:, :, ::4, ::4]  # downsample by a factor of 4
-# Define the Forward Operator: study case of deblurring + Gaussian noise
-# -----------------------------------------------------------------------
-# Load a forward operator $A$ and generate some (noisy) measurements.
-# The full list of operators is available here:
-# (https://deepinv.github.io/deepinv/deepinv.physics.html).
+x_true = dinv.utils.load_url_image(url=url).to(device)
+print(f"Image shape: {x_true.shape}")
 
 # Define linear operator
 filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
 physics = dinv.physics.Blur(filter_0, device=device, padding="reflect")
 seed = torch.manual_seed(0)  # Random seed for reproducibility
 
-# physics = dinv.physics.Inpainting(mask=0.5, tensor_size=x_true.shape[1:])
 sigma = 0.01
 
 # Define noise
@@ -60,15 +49,12 @@ y = physics(x_true)
 yML = y.clone()
 back = physics.A_adjoint(y)
 
-# dinv.utils.plot([x_true, y, back], titles=['original','observation','backprojection'])
-
-
-# Reconstruction PnP with Forward-Backward algorithm
-# ---------------------------------------------------
-
+dinv.utils.plot([x_true, y, back], titles=['original','observation','backprojection'])
 
 # Define data fidelity term
 data_fidelity = dinv.optim.L2()
+
+#%% ----- Parameters -----
 
 # Define prior
 args_prior = "TV"
@@ -78,9 +64,8 @@ args_prior = "TV"
 args_algo = "FISTA"
 # args_algo = "FB"
 
-
 if args_prior == "TV":
-    criterion = 1e-5
+    criterion = 1e-5  # Parameters for computing the TV prior
     n_it_max = 50
     prior = dinv.optim.TVPrior(def_crit=criterion, n_it_max=n_it_max)
     denoiser = prior.prox
@@ -88,10 +73,8 @@ elif args_prior == "Wavelet":
     prior = dinv.optim.WaveletPrior(level=4, wv="haar", p=1, device=device)
     denoiser = prior.prox
 
-
 # Define regularization parameter
-
-#param_regularization = 2*sigma**2
+#param_regularization = 2*sigma**2 # From the Bayesian interpretation
 param_regularization = 1e-6
 
 # Define algorithm parameters
@@ -107,18 +90,15 @@ elif args_algo == "FB":
     param_gamma = 1.95 * param_gamma
     param_gamma_ML = param_gamma
 
-
 param_iter = 35  # number of iterations
 a = 2.1  # inertia parameter
 
 # Define multilevel parameters
-
-levels = 4  # number of levels
-param_coarse_iter = 5  # number of iterations at coarse level
-max_multilevel_iter = 5  # maximum number of  multilevel iterations at fine level
-cst_grad = None  # only used at coarser levels. stays none at fine level.
+levels = 4                     # number of levels
+param_coarse_iter = 5          # number of iterations at coarse level
+max_multilevel_iter = 5        # maximum number of  multilevel iterations at fine level
+cst_grad = None                # only used at coarser levels. stays none at fine level
 info_transfer = "daubechies8"  # type of information transfer
-# info_transfer : plot filter_classes
 
 
 xk = back.clone()
@@ -131,7 +111,7 @@ else:
 
 initial_snr_value = perf_psnr(x_true, xk).item()
 
-# ---- Multilevel Iterations with Conditional Denoiser ----
+#%% ----- Multilevel Iterations with Conditional Denoiser -----
 args_multilevel = ParametersMultilevel(
     target_shape=x_true.shape[-3:],
     levels=levels,
@@ -150,11 +130,14 @@ crit_ML_cond = 1e10 * np.ones(param_iter)
 psnr_ML_cond = 1e10 * np.ones(param_iter)
 diff_ML_cond = []
 
+denoiser_cond = WaveletDenoiserConditional(level=levels, wv="db8", device=device, non_linearity="soft")
+
 with torch.no_grad():
     for k in range(param_iter):
         xk_prev = xk.clone()
 
         if k < max_multilevel_iter:
+            # Multilevel step
             zk = MultiLevelWavelets(
                 zk,
                 levels,
@@ -164,10 +147,9 @@ with torch.no_grad():
                 cst_grad,
                 device,
             )
+        # Fine gradient step
         xk = zk - param_gamma * data_fidelity.grad(zk, y, physics)
-
-        # Using custom denoiser as "prox"
-        denoiser_cond = WaveletDenoiserConditional(level=levels, wv="db8", device=device, non_linearity="soft")
+        # Fine proximal step (using conditional denoiser as the prox)
         xk = denoiser_cond(xk, gamma=param_regularization * param_gamma)
 
         psnr_ML_cond[k] = perf_psnr(x_true, xk).item()
@@ -184,7 +166,7 @@ with torch.no_grad():
 
 x_est_ml_cond = xk.clone()
 
-# ---- Multilevel FISTA ----
+#%% ----- Multilevel FISTA -----
 
 # Iterations ML
 args_multilevel = ParametersMultilevel(
@@ -207,7 +189,7 @@ diff_ML = []
 
 xk = back.clone()
 zk = back.clone()
-with torch.no_grad():  # Remplacer les proxs par notre débruiteur conditionnel
+with torch.no_grad():
     for k in range(param_iter):
         xk_prev = xk.clone()
         if k < max_multilevel_iter:
@@ -243,7 +225,7 @@ with torch.no_grad():  # Remplacer les proxs par notre débruiteur conditionnel
 x_est_ml = xk.clone()
 
 
-# ---- Classical single level iterations ----
+#%% ----- Classical single level iterations -----
 if args_prior == "TV":
     prior = dinv.optim.TVPrior(def_crit=criterion, n_it_max=n_it_max)
     denoiser = prior.prox
@@ -288,7 +270,7 @@ with torch.no_grad():
             zk = xk + (((k + a) / a) ** d - 1) / ((k + 1 + a) / a) ** d * (xk - xk_prev)
         diff_SL.append(torch.norm(xk - xk_prev).item())
 
-# ---- Display results ----
+#%% ----- Display results -----
 
 # Plot ML vs SL crit
 plt.figure(figsize=(10, 5))
