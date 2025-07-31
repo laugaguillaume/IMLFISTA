@@ -253,8 +253,18 @@ def MultiLevelWavelets(
         # Plot: detail coefficients before vs after thresholding
         # dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
 
-    # Coarse correction
-    coarse_correction = xk_coarse - x0_coarse
+    # Transfer the coefficients back to the fine level
+    xk_components = {
+        "LL": xk_coarse,
+        "LH": LH,
+        "HL": HL,
+        "HH": HH,
+    }
+    xk = information_transfer.to_fine_wavelet(
+        xk_components
+    )  
+    
+    '''coarse_correction = xk_coarse - x0_coarse
     # Question : should we do LH - LH0, HL - HL0, HH - HH0 ?
     coarse_correction_components = {
         "LL": coarse_correction,
@@ -284,7 +294,7 @@ def MultiLevelWavelets(
         prior,
         param_reg_fine,
         step_coarse * 2,
-    )
+    )'''
     # xk = xk + step_coarse* coarse_correction
     # print(f"Step size at level {levels}: {step_coarse}")
     return xk
@@ -769,7 +779,7 @@ class WaveletDenoiserConditional(Denoiser):
         self, x: torch.Tensor, gamma=0.1
     ):
         """
-        Hard thresholding of the wavelet coefficients.
+        Hard thresholding.
         """
         out = x.clone()
         out[out.abs() < gamma] = 0

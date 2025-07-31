@@ -75,8 +75,8 @@ elif args_prior == "Wavelet":
     denoiser = prior.prox
 
 # Define regularization parameter
-#param_regularization = 2*sigma**2 # From the Bayesian interpretation
-param_regularization = 1e-6
+param_regularization = 2*sigma**2 # From the Bayesian interpretation
+#param_regularization = 1e-6
 
 # Define algorithm parameters
 random_tensor = torch.randn(x_true.shape).to(device)
@@ -91,7 +91,7 @@ elif args_algo == "FB":
     param_gamma = 1.95 * param_gamma
     param_gamma_ML = param_gamma
 
-param_iter = 35  # number of iterations
+param_iter = 100  # number of iterations
 a = 2.1  # inertia parameter
 
 # Define multilevel parameters
@@ -156,7 +156,7 @@ with torch.no_grad():
         psnr_ML_cond[k] = perf_psnr(x_true, xk).item()
 
         if k % 10 == 0:
-            print(f"crit ML[{k}] / snr ML[{k}]: {crit_ML_cond[k]} / {psnr_ML_cond[k]}")
+            print(f"crit ML Cond[{k}] / snr ML Cond[{k}]: {crit_ML_cond[k]} / {psnr_ML_cond[k]}")
 
         if d == 0:
             zk = xk
