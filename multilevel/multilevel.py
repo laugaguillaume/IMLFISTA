@@ -254,6 +254,7 @@ def MultiLevelWavelets(
         # Plot: detail coefficients before vs after thresholding
         # dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
 
+    # Coarse correction in the wavelet domain
     coarse_correction = xk_coarse - x0_coarse
     coarse_correction_components = {
         "LL": coarse_correction,
@@ -264,36 +265,21 @@ def MultiLevelWavelets(
     coarse_correction_fine = information_transfer.to_fine_wavelet(
         coarse_correction_components
     )
-    # Faire Line Search sur l'attache aux données
-    # Plot \|Ax-y\|
-    tau = 0.001
-    xk = xk + tau * coarse_correction_fine
-    #xk = coarse_correction_fine
+    # Line search to find the optimal stepsize in the direction of coarse_correction
+    xk, tau = linesearch(xk, coarse_correction_fine, lambda x: data_fidelity.fn(x, observation, physics))
 
-    cst_grad_fine = (
-        torch.zeros_like(coarse_correction_fine)
-        if cst_grad_fine is None
-        else cst_grad_fine
-    )
-    '''xk, step_coarse = ML_linesearch(
-        xk,
-        level_max,
-        levels + 1,
-        coarse_correction_fine,
-        cst_grad_fine,
-        data_fidelity,
-        observation,
-        physics,
-        grad_prior,
-        denoiser,
-        prior,
-        param_reg_fine,
-        step_coarse * 2,
-    )'''
-    # xk = xk + step_coarse* coarse_correction
-    # print(f"Step size at level {levels}: {step_coarse}")
     return xk
 
+def linesearch(xk, p, obj_fun, tau_init=1.0, min_tau=1e-6):
+    tau = tau_init
+    f_current = obj_fun(xk)
+    x_new = xk + tau * p
+
+    while obj_fun(x_new) > f_current and tau > min_tau:
+        tau /= 2
+        x_new = xk + tau * p
+
+    return x_new, tau
 
 class ParametersMultilevel:
     def __init__(

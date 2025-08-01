@@ -65,6 +65,29 @@ dinv.utils.plot([x_true, y, back], titles=['original','observation','backproject
 # Define data fidelity term
 data_fidelity = dinv.optim.L2()
 
+import torch
+
+def estimate_rank(apply_A, n, max_iter=100, tol=1e-8):
+    Y = []
+    for _ in range(max_iter):
+        x = torch.randn(n)  # vecteur aléatoire
+        y = apply_A(x)      # produit Ax (sans connaître A explicitement)
+
+        if len(Y) == 0:
+            Y.append(y)
+        else:
+            # Projection sur l'espace engendré
+            Y_mat = torch.stack(Y).T  # shape (m, k)
+            proj = Y_mat @ torch.linalg.lstsq(Y_mat, y).solution
+            residual = y - proj
+            if torch.norm(residual) > tol:
+                Y.append(y)
+            else:
+                break  # vecteur dépendant => pas de gain de rang
+    return len(Y)
+
+print(physics.condition_number(x_true))
+
 #%% ----- Parameters -----
 
 # Define prior
@@ -101,7 +124,7 @@ elif args_algo == "FB":
     param_gamma = 1.95 * param_gamma
     param_gamma_ML = param_gamma
 
-param_iter = 100  # number of iterations
+param_iter = 1000  # number of iterations
 a = 2.1  # inertia parameter
 
 # Define multilevel parameters

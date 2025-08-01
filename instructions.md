@@ -1,4 +1,4 @@
-# Turoriel : code multiniveaux avec débruiteur conditionnel
+# Tutoriel : code multiniveaux avec débruiteur conditionnel
 
 ## 1- Télécharger le code depuis Git
 Le code est sur le repository Github IMLFISTA créé par Guillaume et Nils, disponible *via* le lien suivant : https://github.com/laugaguillaume/IMLFISTA.
@@ -14,7 +14,7 @@ Pour télécharger le code, dans le terminal :
     cd IMLFISTA
     ```
 
-Vous avez maintenant accès au code de la branche ```main```, qui contient le code de Guillaume pour IMLFISTA et celui de Nils pour le Multilevel Plug and Play. 
+Vous avez maintenant accès au code de la branche ```main```, qui contient le code de Guillaume pour IMLFISTA et celui de Nils pour le Multilevel Plug and Play.
 
 Pour changer de branche et accéder à notre code qui se trouve dans la branche ```edgar```, exécuter dans le terminal :
 ```bash
@@ -43,3 +43,11 @@ Il faut exécuter le code comme un module avec ```python3 -m``` car les scripts 
 ```bash
 python3 -m demo.demo_multilevel_conditional_denoising
 ```
+
+(Sur Linux il faut remplacer ```python3``` par ```python```)
+
+## Contenu des fichiers
+
+Les calculs multiniveaux sont effectués *via* la classe ```Multilevel``` pour le multiniveaux classique, ou *via* la classe ```MultilevelWavelets``` dans le cas de reconstruction conditionnelle.  Ces deux classes se trouvent dans le fichier ```multilevel/multilevel.py``` qui utilise les opérateurs de transfert d'information définis dans le fichier ```multilevel/info_transfer.py```.
+
+Ensuite, le choix des paramètres et de l'algorithme, et les itérations fines se font "au cas par cas" dans les fichiers du dossier ```demo```.
