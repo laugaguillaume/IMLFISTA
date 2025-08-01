@@ -247,7 +247,6 @@ def MultiLevelWavelets(
         # Old coefficients if we need to compare
         LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
         # Threshold the detail coefficients based on the reconstructed approximation
-        print(k)
         LH, HL, HH = conditional_thresholding(
             {"LH": LH, "HL": HL, "HH": HH}, xk_coarse, global_threshold=param_reg_coarse
         )
@@ -255,19 +254,7 @@ def MultiLevelWavelets(
         # Plot: detail coefficients before vs after thresholding
         # dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
 
-    # Transfer the coefficients back to the fine level
-    xk_components = {
-        "LL": xk_coarse,
-        "LH": LH,
-        "HL": HL,
-        "HH": HH,
-    }
-    xk = information_transfer.to_fine_wavelet(
-        xk_components
-    )  
-    
-    '''coarse_correction = xk_coarse - x0_coarse
-    # Question : should we do LH - LH0, HL - HL0, HH - HH0 ?
+    coarse_correction = xk_coarse - x0_coarse
     coarse_correction_components = {
         "LL": coarse_correction,
         "LH": LH - LH0,
@@ -279,7 +266,7 @@ def MultiLevelWavelets(
     )
     # Faire Line Search sur l'attache aux données
     # Plot \|Ax-y\|
-    tau = 0.01
+    tau = 0.001
     xk = xk + tau * coarse_correction_fine
     #xk = coarse_correction_fine
 

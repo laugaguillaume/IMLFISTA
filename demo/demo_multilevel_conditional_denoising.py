@@ -72,8 +72,8 @@ args_prior = "TV"
 # args_prior = "Wavelet"
 
 # Define single level algorithm
-args_algo = "FISTA"
-# args_algo = "FB"
+# args_algo = "FISTA"
+args_algo = "FB"
 
 if args_prior == "TV":
     criterion = 1e-5  # Parameters for computing the TV prior
@@ -85,8 +85,8 @@ elif args_prior == "Wavelet":
     denoiser = prior.prox
 
 # Define regularization parameter
-param_regularization = 2*sigma**2 # From the Bayesian interpretation
-#param_regularization = 1e-6
+# param_regularization = 2*sigma**2 # From the Bayesian interpretation
+param_regularization = 1e-6
 
 # Define algorithm parameters
 random_tensor = torch.randn(x_true.shape).to(device)
@@ -140,6 +140,7 @@ args_multilevel = ParametersMultilevel(
 crit_ML_cond = 1e10 * np.ones(param_iter)
 psnr_ML_cond = 1e10 * np.ones(param_iter)
 diff_ML_cond = []
+data_fidelity_crit_ML_cond = []
 
 denoiser_cond = WaveletDenoiserConditional(level=levels, wv="db8", device=device, non_linearity="soft")
 
@@ -164,9 +165,10 @@ with torch.no_grad():
         xk = denoiser_cond(xk, gamma=param_regularization * param_gamma)
 
         psnr_ML_cond[k] = perf_psnr(x_true, xk).item()
+        data_fidelity_crit_ML_cond.append(data_fidelity(xk, y, physics).item())
 
         if k % 10 == 0:
-            print(f"crit ML Cond[{k}] / snr ML Cond[{k}]: {crit_ML_cond[k]} / {psnr_ML_cond[k]}")
+            print(f"crit ML Cond[{k}] / snr ML Cond[{k}]: No obj. fun. / {psnr_ML_cond[k]}")
 
         if d == 0:
             zk = xk
@@ -197,6 +199,7 @@ args_multilevel = ParametersMultilevel(
 crit_ML = 1e10 * np.ones(param_iter)
 psnr_ML = 1e10 * np.ones(param_iter)
 diff_ML = []
+data_fidelity_crit_ML = []
 
 xk = back.clone()
 zk = back.clone()
@@ -225,6 +228,7 @@ with torch.no_grad():
                 xk, y, physics
             ) + param_regularization * prior.fn(xk)
         psnr_ML[k] = perf_psnr(x_true, xk).item()
+        data_fidelity_crit_ML.append(data_fidelity(xk, y, physics).item())
         if k % 10 == 0:
             print(f"crit ML[{k}] / snr ML[{k}]: {crit_ML[k]} / {psnr_ML[k]}")
         if d == 0:
@@ -249,6 +253,7 @@ crit_SL = 1e10 * np.ones(param_iter)
 psnr_SL = 1e10 * np.ones(param_iter)
 d = 0
 diff_SL = []
+data_fidelity_crit_SL = []
 
 with torch.no_grad():
     for k in range(param_iter):
@@ -269,6 +274,7 @@ with torch.no_grad():
             ) + param_regularization * prior.fn(xk)
 
         psnr_SL[k] = perf_psnr(x_true, xk).item()
+        data_fidelity_crit_SL.append(data_fidelity(xk, y, physics).item())
 
         if k % 10 == 0:
             print(f"crit SL[{k}] / snr SL[{k}]: {crit_SL[k]} / {psnr_SL[k]}")
@@ -283,7 +289,7 @@ with torch.no_grad():
 
 #%% ----- Display results -----
 
-# Plot ML vs SL crit
+# Plot ML vs SL objective function evolution
 plt.figure(figsize=(10, 5))
 plt.plot(crit_ML, linestyle="-", color="blue", label="ML")
 plt.plot(crit_SL, linestyle="--", color="green", label="SL")
@@ -296,7 +302,7 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
-
+# Plot the error evolution for each algorithm
 plt.figure(figsize=(10, 5))
 plt.plot(diff_ML, linestyle="-", color="blue", label="ML")
 plt.plot(diff_SL, linestyle="--", color="green", label="SL")
@@ -310,6 +316,7 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
+# Plot PSNR and data fidelity evolutions for each algorithm
 plt.figure(figsize=(10, 5))
 plt.plot(psnr_ML, linestyle="-", color="blue", label="ML")
 plt.plot(psnr_SL, linestyle="--", color="green", label="SL")
@@ -321,6 +328,20 @@ plt.grid(True)
 plt.legend()
 plt.tight_layout()
 plt.show()
+
+# Plot data fidelity evolution for each algorithm
+plt.figure(figsize=(10, 5))
+plt.plot(data_fidelity_crit_ML, linestyle="-", color="blue", label="ML")
+plt.plot(data_fidelity_crit_SL, linestyle="--", color="green", label="SL")
+plt.plot(data_fidelity_crit_ML_cond, linestyle=":", color="red", label="ML with conditional denoiser")
+plt.title("Data Fidelity of ML and SL Algorithms")
+plt.xlabel("Iteration")
+plt.ylabel(r"$\|Ax_k - y\|_2$")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
+
 
 psnrs = np.array(
     [perf_psnr(x_true, x).item() for x in [y, xk, x_est_ml, x_est_ml_cond]]
