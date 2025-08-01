@@ -75,7 +75,7 @@ elif args_algo == "FB":
     param_gamma = 1.95 * param_gamma
     param_gamma_ML = param_gamma
 
-param_iter = 200  # Reduced number of iterations for grid search
+param_iter = 100  # Reduced number of iterations for grid search
 a = 2.1  # inertia parameter
 
 # Define multilevel parameters
@@ -103,11 +103,11 @@ results = {
 def run_algorithm(param_regularization, algorithm_type='ML'):
     """
     Run a single algorithm with given regularization parameter
-    
+
     Args:
         param_regularization: regularization parameter value
         algorithm_type: 'ML', 'SL', or 'ML_cond'
-    
+
     Returns:
         tuple: (psnr_values, final_psnr, final_image)
     """
@@ -115,7 +115,7 @@ def run_algorithm(param_regularization, algorithm_type='ML'):
     xk = back.clone()
     zk = back.clone()
     psnr_values = np.zeros(param_iter)
-    
+
     # Setup multilevel parameters if needed
     if algorithm_type in ['ML', 'ML_cond']:
         args_multilevel = ParametersMultilevel(
@@ -132,11 +132,11 @@ def run_algorithm(param_regularization, algorithm_type='ML'):
             observation=y,
             device=device,
         )
-    
+
     with torch.no_grad():
         for k in range(param_iter):
             xk_prev = xk.clone()
-            
+
             if algorithm_type == 'ML':
                 # Multilevel FISTA
                 if k < max_multilevel_iter:
@@ -149,7 +149,7 @@ def run_algorithm(param_regularization, algorithm_type='ML'):
                     xk = prior.prox(xk, gamma=param_gamma * param_regularization)
                 else:
                     xk = prior.prox(xk, gamma=[param_gamma * param_regularization])
-                    
+
             elif algorithm_type == 'ML_cond':
                 # Multilevel with conditional denoiser
                 if k < max_multilevel_iter:
@@ -160,7 +160,7 @@ def run_algorithm(param_regularization, algorithm_type='ML'):
                 xk = zk - param_gamma * data_fidelity.grad(zk, y, physics)
                 denoiser_cond = WaveletDenoiserConditional(level=levels, wv="db8", device=device, non_linearity="soft")
                 xk = denoiser_cond(xk, gamma=param_regularization * param_gamma)
-                
+
             elif algorithm_type == 'SL':
                 # Single level
                 xk = zk - param_gamma * data_fidelity.grad(zk, y, physics)
@@ -168,15 +168,15 @@ def run_algorithm(param_regularization, algorithm_type='ML'):
                     xk = prior.prox(xk, gamma=param_gamma * param_regularization)
                 else:
                     xk = prior.prox(xk, gamma=[param_gamma * param_regularization])
-            
+
             psnr_values[k] = perf_psnr(x_true, xk).item()
-            
+
             # Update momentum term
             if d == 0:
                 zk = xk
             else:
                 zk = xk + (((k + a) / a) ** d - 1) / ((k + 1 + a) / a) ** d * (xk - xk_prev)
-    
+
     return psnr_values, psnr_values[-1], xk.clone()
 
 # ============= RUN GRID SEARCH =============
@@ -184,7 +184,7 @@ print("Starting grid search...")
 
 for i, param_reg in enumerate(param_reg_values):
     print(f"\nTesting param_regularization = {param_reg} ({i+1}/{len(param_reg_values)})")
-    
+
     # Test ML algorithm
     print("  Running ML...")
     psnr_ml, final_psnr_ml, final_img_ml = run_algorithm(param_reg, 'ML')
@@ -193,7 +193,7 @@ for i, param_reg in enumerate(param_reg_values):
         'final_psnr': final_psnr_ml,
         'final_image': final_img_ml
     }
-    
+
     # Test SL algorithm
     print("  Running SL...")
     psnr_sl, final_psnr_sl, final_img_sl = run_algorithm(param_reg, 'SL')
@@ -202,7 +202,7 @@ for i, param_reg in enumerate(param_reg_values):
         'final_psnr': final_psnr_sl,
         'final_image': final_img_sl
     }
-    
+
     # Test ML with conditional denoiser
     print("  Running ML with conditional denoiser...")
     psnr_ml_cond, final_psnr_ml_cond, final_img_ml_cond = run_algorithm(param_reg, 'ML_cond')
@@ -211,24 +211,24 @@ for i, param_reg in enumerate(param_reg_values):
         'final_psnr': final_psnr_ml_cond,
         'final_image': final_img_ml_cond
     }
-    
+
     print(f"  Final PSNRs - ML: {final_psnr_ml:.3f}, SL: {final_psnr_sl:.3f}, ML_cond: {final_psnr_ml_cond:.3f}")
 
-print("\nGrid search completed!")
+print("\nGrid search done")
 
 # ============= PLOT RESULTS =============
 
-# Plot 1: PSNR curves for different regularization parameters (ML algorithm)
+# Plot 1: PSNR curves for different regularization parameters (ML Cond algorithm)
 plt.figure(figsize=(12, 8))
 colors = plt.cm.viridis(np.linspace(0, 1, len(param_reg_values)))
 
 for i, param_reg in enumerate(param_reg_values):
-    plt.plot(results['ML'][param_reg]['psnr_curve'], 
-             color=colors[i], 
+    plt.plot(results['ML_cond'][param_reg]['psnr_curve'],
+             color=colors[i],
              label=f'lambda = {param_reg:.1e}',
              linewidth=2)
 
-plt.title('PSNR Evolution for Different Regularization Parameters (ML Algorithm)')
+plt.title('PSNR Evolution for Different Regularization Parameters (ML Cond Algorithm)')
 plt.xlabel('Iteration')
 plt.ylabel('PSNR (dB)')
 plt.grid(True, alpha=0.3)
@@ -236,32 +236,23 @@ plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
 plt.tight_layout()
 plt.show()
 
-# Plot 2: Comparison of final PSNRs
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+# Plot: Final PSNR vs Regularization Parameter (Log Scale)
+fig, ax = plt.subplots(figsize=(8, 6))
 
 final_psnrs_ml = [results['ML'][param_reg]['final_psnr'] for param_reg in param_reg_values]
 final_psnrs_sl = [results['SL'][param_reg]['final_psnr'] for param_reg in param_reg_values]
 final_psnrs_ml_cond = [results['ML_cond'][param_reg]['final_psnr'] for param_reg in param_reg_values]
 
-# Linear scale
-ax1.plot(param_reg_values, final_psnrs_ml, 'o-', label='ML', linewidth=2, markersize=8)
-ax1.plot(param_reg_values, final_psnrs_sl, 's--', label='SL', linewidth=2, markersize=8)
-ax1.plot(param_reg_values, final_psnrs_ml_cond, '^:', label='ML cond', linewidth=2, markersize=8)
-ax1.set_xlabel('Regularization Parameter')
-ax1.set_ylabel('Final PSNR (dB)')
-ax1.set_title('Final PSNR vs Regularization Parameter')
-ax1.grid(True, alpha=0.3)
-ax1.legend()
+# Log scale plot
+ax.semilogx(param_reg_values, final_psnrs_ml, 'o-', label='ML', linewidth=2, markersize=8)
+ax.semilogx(param_reg_values, final_psnrs_sl, 's--', label='SL', linewidth=2, markersize=8)
+ax.semilogx(param_reg_values, final_psnrs_ml_cond, '^:', label='ML cond', linewidth=2, markersize=8)
 
-# Log scale
-ax2.semilogx(param_reg_values, final_psnrs_ml, 'o-', label='ML', linewidth=2, markersize=8)
-ax2.semilogx(param_reg_values, final_psnrs_sl, 's--', label='SL', linewidth=2, markersize=8)
-ax2.semilogx(param_reg_values, final_psnrs_ml_cond, '^:', label='ML cond', linewidth=2, markersize=8)
-ax2.set_xlabel('Regularization Parameter (log scale)')
-ax2.set_ylabel('Final PSNR (dB)')
-ax2.set_title('Final PSNR vs Regularization Parameter (Log Scale)')
-ax2.grid(True, alpha=0.3)
-ax2.legend()
+ax.set_xlabel('Regularization Parameter (log scale)')
+ax.set_ylabel('Final PSNR (dB)')
+ax.set_title('Final PSNR vs Regularization Parameter (Log Scale)')
+ax.grid(True, alpha=0.3)
+ax.legend()
 
 plt.tight_layout()
 plt.show()
@@ -286,7 +277,7 @@ best_psnrs = np.array([
 best_psnrs = np.round(best_psnrs, 3)
 
 dinv.utils.plot(
-    [x_true, y, 
+    [x_true, y,
      results['ML'][best_param_ml]['final_image'],
      results['SL'][best_param_sl]['final_image'],
      results['ML_cond'][best_param_ml_cond]['final_image']],
@@ -302,11 +293,11 @@ dinv.utils.plot(
 
 # Plot 4: PSNR evolution comparison for best parameters
 plt.figure(figsize=(12, 8))
-plt.plot(results['ML'][best_param_ml]['psnr_curve'], '-', linewidth=2, 
+plt.plot(results['ML'][best_param_ml]['psnr_curve'], '-', linewidth=2,
          label=f'ML (lambda={best_param_ml:.1e})')
-plt.plot(results['SL'][best_param_sl]['psnr_curve'], '--', linewidth=2, 
+plt.plot(results['SL'][best_param_sl]['psnr_curve'], '--', linewidth=2,
          label=f'SL (lambda={best_param_sl:.1e})')
-plt.plot(results['ML_cond'][best_param_ml_cond]['psnr_curve'], ':', linewidth=2, 
+plt.plot(results['ML_cond'][best_param_ml_cond]['psnr_curve'], ':', linewidth=2,
          label=f'ML_cond (lambda={best_param_ml_cond:.1e})')
 
 plt.title('PSNR Evolution for Best Regularization Parameters')
@@ -316,5 +307,3 @@ plt.grid(True, alpha=0.3)
 plt.legend()
 plt.tight_layout()
 plt.show()
-
-print("\nGrid search analysis completed!")

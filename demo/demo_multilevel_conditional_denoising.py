@@ -19,6 +19,16 @@ from deepinv.loss.metric import PSNR
 from deepinv.models import Denoiser
 from multilevel.multilevel import ParametersMultilevel, MultiLevelWavelets, MultiLevel, WaveletDenoiserConditional
 
+'''
+A faire :
+m pas de gradients puis prox
+guillaume avec cohérence + prox conditionnel
+x_k+1 = x_k + tau * P(a^* - a0, détails propres-d0)
+= P (a0 + tau(a^* - a0), d0 + tau*(détails propres-d0))
+x_k+1 = P(a^*, détails propres)
+Regarder si tau = 1
+'''
+
 perf_psnr = PSNR()
 
 plt.rcParams["text.usetex"] = True  # Activate LaTeX rendering

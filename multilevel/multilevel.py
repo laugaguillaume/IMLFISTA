@@ -208,6 +208,7 @@ def MultiLevelWavelets(
     components = information_transfer.to_coarse_wavelet(xk)
     xk_coarse = components["LL"]
     LH, HL, HH = components["LH"], components["HL"], components["HH"]
+    LH0, HL0, HH0 = copy.deepcopy(LH), copy.deepcopy(HL), copy.deepcopy(HH)
 
     # Initialize the multilevel iteration with the approximation coefficients
     x0_coarse = xk_coarse.clone()
@@ -246,6 +247,7 @@ def MultiLevelWavelets(
         # Old coefficients if we need to compare
         LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
         # Threshold the detail coefficients based on the reconstructed approximation
+        print(k)
         LH, HL, HH = conditional_thresholding(
             {"LH": LH, "HL": HL, "HH": HH}, xk_coarse, global_threshold=param_reg_coarse
         )
@@ -268,19 +270,25 @@ def MultiLevelWavelets(
     # Question : should we do LH - LH0, HL - HL0, HH - HH0 ?
     coarse_correction_components = {
         "LL": coarse_correction,
-        "LH": LH,
-        "HL": HL,
-        "HH": HH,
+        "LH": LH - LH0,
+        "HL": HL - HL0,
+        "HH": HH - HH0,
     }
     coarse_correction_fine = information_transfer.to_fine_wavelet(
         coarse_correction_components
     )
+    # Faire Line Search sur l'attache aux données
+    # Plot \|Ax-y\|
+    tau = 0.01
+    xk = xk + tau * coarse_correction_fine
+    #xk = coarse_correction_fine
+
     cst_grad_fine = (
         torch.zeros_like(coarse_correction_fine)
         if cst_grad_fine is None
         else cst_grad_fine
     )
-    xk, step_coarse = ML_linesearch(
+    '''xk, step_coarse = ML_linesearch(
         xk,
         level_max,
         levels + 1,
