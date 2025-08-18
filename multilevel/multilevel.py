@@ -229,21 +229,12 @@ def MultiLevelWavelets(
                     cst_grad,
                 )  # Recursive call if levels > 1
 
-            if isinstance(prior, dinv.optim.prior.PnP):
-                # Coarse gradient descent but no coherence term (doesn't really make sense as we don't use ML PnP with our conditional thresholding)
-                xk_coarse = prior.denoiser(
-                    xk_coarse
-                    - step_size
-                    * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics),
-                    param_reg_coarse,
-                )
-            else:
                 # Coarse gradient descent but no coherence term nor grad prior
-                xk_coarse = (
-                    xk_coarse
-                    - step_size
-                    * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
-                )
+            xk_coarse = (
+                xk_coarse
+                - step_size
+                * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
+            )
         # Old coefficients if we need to compare
         LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
         # Threshold the detail coefficients based on the reconstructed approximation
@@ -266,12 +257,11 @@ def MultiLevelWavelets(
         coarse_correction_components
     )
     # Line search to find the optimal stepsize in the direction of coarse_correction
-    xk, tau = linesearch_armijo(xk, coarse_correction_fine, lambda x: data_fidelity.fn(x, observation, physics), lambda x: data_fidelity.grad(x, observation, physics))
-    print(tau)
+    xk, tau = linesearch(xk, p=coarse_correction_fine, obj_fun=lambda x: data_fidelity.fn(x, observation, physics), grad_obj_fun=lambda x: data_fidelity.grad(x, observation, physics))
 
     return xk
 
-def linesearch(xk, p, obj_fun, tau_init=1.0, min_tau=1e-6):
+def linesearch(xk, p, obj_fun, tau_init=1.0, min_tau=1e-6, grad_obj_fun=None):
     tau = tau_init
     f_current = obj_fun(xk)
     x_new = xk + tau * p
@@ -282,7 +272,7 @@ def linesearch(xk, p, obj_fun, tau_init=1.0, min_tau=1e-6):
 
     return x_new, tau
 
-def linesearch_armijo(xk, p, obj_fun, grad_obj_fun, tau_init=1.0, c=1e-4, min_tau=1e-6):
+def linesearch_armijo(xk, p, obj_fun, grad_obj_fun, tau_init=1.0, min_tau=1e-6, c=1e-4):
     tau = tau_init
     f_current = obj_fun(xk)
     grad_current = grad_obj_fun(xk)

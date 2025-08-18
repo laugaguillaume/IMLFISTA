@@ -21,12 +21,13 @@ from multilevel.multilevel import ParametersMultilevel, MultiLevelWavelets, Mult
 
 '''
 A faire :
-m pas de gradients puis prox
 guillaume avec cohérence + prox conditionnel
+
+Deux approches :
 x_k+1 = x_k + tau * P(a^* - a0, détails propres-d0)
 = P (a0 + tau(a^* - a0), d0 + tau*(détails propres-d0))
-x_k+1 = P(a^*, détails propres)
-Regarder si tau = 1
+x_k+1 = P(a^*, détails propres),
+Regarder si tau = 1 (alors les deux approches sont équivalentes)
 '''
 
 perf_psnr = PSNR()
@@ -76,11 +77,13 @@ args_prior = "TV"
 args_algo = "FB"
 
 if args_prior == "TV":
+    print('Using TV prior')
     criterion = 1e-5  # Parameters for computing the TV prior
     n_it_max = 50
     prior = dinv.optim.TVPrior(def_crit=criterion, n_it_max=n_it_max)
     denoiser = prior.prox
 elif args_prior == "Wavelet":
+    print('Using Wavelet prior')
     prior = dinv.optim.WaveletPrior(level=4, wv="haar", p=1, device=device)
     denoiser = prior.prox
 
@@ -93,15 +96,19 @@ random_tensor = torch.randn(x_true.shape).to(device)
 Anorm2 = physics.compute_norm(random_tensor)
 param_gamma = torch.ones(1, device=device) / Anorm2  # Set the step-size
 if args_algo == "FISTA":
+    print('Using FISTA algorithm')
     d = 1
     param_gamma = 0.95 * param_gamma
     param_gamma_ML = 1.95 * param_gamma
 elif args_algo == "FB":
+    print('Using FB algorithm')
     d = 0
     param_gamma = 1.95 * param_gamma
     param_gamma_ML = param_gamma
 
-param_iter = 1000  # number of iterations
+'''param_gamma = 0.95 * torch.ones(1, device=device) / Anorm2  # For coherence we use this step-size for all algorithms
+param_gamma_gamma_ML = 1.95 * param_gamma'''
+param_iter = 100  # number of iterations
 a = 2.1  # inertia parameter
 
 # Define multilevel parameters
@@ -166,6 +173,7 @@ with torch.no_grad():
 
         psnr_ML_cond[k] = perf_psnr(x_true, xk).item()
         data_fidelity_crit_ML_cond.append(data_fidelity(xk, y, physics).item())
+        diff_ML_cond.append(torch.norm(xk - xk_prev).item())
 
         if k % 10 == 0:
             print(f"crit ML Cond[{k}] / snr ML Cond[{k}]: No obj. fun. / {psnr_ML_cond[k]}")
@@ -174,8 +182,6 @@ with torch.no_grad():
             zk = xk
         else:
             zk = xk + (((k + a) / a) ** d - 1) / ((k + 1 + a) / a) ** d * (xk - xk_prev)
-
-        diff_ML_cond.append(torch.norm(xk - xk_prev).item())
 
 x_est_ml_cond = xk.clone()
 
@@ -229,22 +235,24 @@ with torch.no_grad():
             ) + param_regularization * prior.fn(xk)
         psnr_ML[k] = perf_psnr(x_true, xk).item()
         data_fidelity_crit_ML.append(data_fidelity(xk, y, physics).item())
+        diff_ML.append(torch.norm(xk - xk_prev).item())
         if k % 10 == 0:
             print(f"crit ML[{k}] / snr ML[{k}]: {crit_ML[k]} / {psnr_ML[k]}")
         if d == 0:
             zk = xk
         else:
             zk = xk + (((k + a) / a) ** d - 1) / ((k + 1 + a) / a) ** d * (xk - xk_prev)
-        diff_ML.append(torch.norm(xk - xk_prev).item())
 
 x_est_ml = xk.clone()
 
 
 #%% ----- Classical single level iterations -----
 if args_prior == "TV":
+    print('Using TV prior')
     prior = dinv.optim.TVPrior(def_crit=criterion, n_it_max=n_it_max)
     denoiser = prior.prox
 elif args_prior == "Wavelet":
+    print('Using Wavelet prior')
     prior = dinv.optim.WaveletPrior(level=4, wv="db8", p=1, device=device)
     denoiser = prior.prox
 xk = back.clone()
@@ -275,6 +283,7 @@ with torch.no_grad():
 
         psnr_SL[k] = perf_psnr(x_true, xk).item()
         data_fidelity_crit_SL.append(data_fidelity(xk, y, physics).item())
+        diff_SL.append(torch.norm(xk - xk_prev).item())
 
         if k % 10 == 0:
             print(f"crit SL[{k}] / snr SL[{k}]: {crit_SL[k]} / {psnr_SL[k]}")
@@ -285,7 +294,61 @@ with torch.no_grad():
             print((k) / (k + 1 + a))
             print((((k + a) / a) ** d - 1) / ((k + 1 + a) / a) ** d)
             zk = xk + (((k + a) / a) ** d - 1) / ((k + 1 + a) / a) ** d * (xk - xk_prev)
-        diff_SL.append(torch.norm(xk - xk_prev).item())
+
+x_est_sl = xk.clone()
+
+#%% ----- Single level iterations with conditional denoiser as prox -----
+
+xk = back.clone()
+
+psnr_SL_cond = 1e10 * np.ones(param_iter)
+diff_SL_cond = []
+data_fidelity_crit_SL_cond = []
+
+with torch.no_grad():
+    for k in range(param_iter):
+        xk_prev = xk.clone()
+        xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
+        xk = denoiser_cond(xk, gamma=param_regularization * param_gamma)
+
+        psnr_SL_cond[k] = perf_psnr(x_true, xk).item()
+        diff_SL_cond.append(torch.norm(xk - xk_prev).item())
+        data_fidelity_crit_SL_cond.append(data_fidelity(xk, y, physics).item())
+
+        if k % 10 == 0:
+            print(f"crit SL cond[{k}] / snr SL Cond[{k}]: No obj. fun. / {psnr_SL_cond[k]}")
+
+x_est_sl_cond = xk.clone()
+
+#%% ----- Single level Plug and Play -----
+
+xk = back.clone()
+
+psnr_SL_pnp = 1e10 * np.ones(param_iter)
+diff_SL_pnp = []
+data_fidelity_crit_SL_pnp = []
+
+denoiser_pnp = dinv.models.DRUNet(
+    in_channels=3,
+    out_channels=3,
+    pretrained='download',
+    device=device
+)
+
+with torch.no_grad():
+    for k in range(param_iter):
+        xk_prev = xk.clone()
+        xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
+        xk = denoiser_pnp(xk, sigma=sigma) # We need to know sigma for the denoising step
+
+        psnr_SL_pnp[k] = perf_psnr(x_true, xk).item()
+        diff_SL_pnp.append(torch.norm(xk - xk_prev).item())
+        data_fidelity_crit_SL_pnp.append(data_fidelity(xk, y, physics).item())
+
+        if k % 10 == 0:
+            print(f"crit SL PnP[{k}] / snr SL PnP[{k}]: No obj. fun. / {psnr_SL_pnp[k]}")
+
+x_est_sl_pnp = xk.clone()
 
 #%% ----- Display results -----
 
@@ -307,6 +370,8 @@ plt.figure(figsize=(10, 5))
 plt.plot(diff_ML, linestyle="-", color="blue", label="ML")
 plt.plot(diff_SL, linestyle="--", color="green", label="SL")
 plt.plot(diff_ML_cond, linestyle=":", color="red", label="ML with conditional denoiser")
+plt.plot(diff_SL_cond, linestyle=":", color="orange", label="SL with conditional denoiser")
+plt.plot(diff_SL_pnp, linestyle="--", color="purple", label="SL PnP")
 plt.title("Convergence of ML and SL Algorithms")
 plt.xlabel("Iteration")
 plt.ylabel(r"$\|x_k - x_{k-1}\|_2$")
@@ -321,6 +386,8 @@ plt.figure(figsize=(10, 5))
 plt.plot(psnr_ML, linestyle="-", color="blue", label="ML")
 plt.plot(psnr_SL, linestyle="--", color="green", label="SL")
 plt.plot(psnr_ML_cond, linestyle=":", color="red", label="ML with conditional denoiser")
+plt.plot(psnr_SL_cond, linestyle=":", color="orange", label="SL with conditional denoiser")
+plt.plot(psnr_SL_pnp, linestyle="--", color="purple", label="SL PnP")
 plt.title("PSNR of ML and SL Algorithms")
 plt.xlabel("Iteration")
 plt.ylabel("PSNR (dB)")
@@ -334,6 +401,8 @@ plt.figure(figsize=(10, 5))
 plt.plot(data_fidelity_crit_ML, linestyle="-", color="blue", label="ML")
 plt.plot(data_fidelity_crit_SL, linestyle="--", color="green", label="SL")
 plt.plot(data_fidelity_crit_ML_cond, linestyle=":", color="red", label="ML with conditional denoiser")
+plt.plot(data_fidelity_crit_SL_cond, linestyle=":", color="orange", label="SL with conditional denoiser")
+plt.plot(data_fidelity_crit_SL_pnp, linestyle="--", color="purple", label="SL PnP")
 plt.title("Data Fidelity of ML and SL Algorithms")
 plt.xlabel("Iteration")
 plt.ylabel(r"$\|Ax_k - y\|_2$")
@@ -342,20 +411,22 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
-
+# Plot the reconstructions
 psnrs = np.array(
-    [perf_psnr(x_true, x).item() for x in [y, xk, x_est_ml, x_est_ml_cond]]
+    [perf_psnr(x_true, x).item() for x in [y, x_est_sl, x_est_ml, x_est_ml_cond, x_est_sl_cond, x_est_sl_pnp]]
 )
 psnrs = np.round(psnrs, 3)
 
 dinv.utils.plot(
-    [x_true, y, xk, x_est_ml, x_est_ml_cond],
+    [x_true, y, x_est_sl, x_est_ml, x_est_ml_cond, x_est_sl_cond, x_est_sl_pnp],
     titles=[
         "original",
         f"observation\n PSNR: {psnrs[0]}",
         f"reconstruction single level\n PSNR: {psnrs[1]}",
         f"ML FISTA\n PSNR: {psnrs[2]}",
         f"ML w/ conditional denoiser\n PSNR: {psnrs[3]}",
+        f"SL w/ conditional denoiser\n PSNR: {psnrs[4]}",
+        f"SL PnP\n PSNR: {psnrs[5]}",
     ],
     cmap="gray",
 )
