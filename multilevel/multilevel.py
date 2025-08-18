@@ -266,7 +266,8 @@ def MultiLevelWavelets(
         coarse_correction_components
     )
     # Line search to find the optimal stepsize in the direction of coarse_correction
-    xk, tau = linesearch(xk, coarse_correction_fine, lambda x: data_fidelity.fn(x, observation, physics))
+    xk, tau = linesearch_armijo(xk, coarse_correction_fine, lambda x: data_fidelity.fn(x, observation, physics), lambda x: data_fidelity.grad(x, observation, physics))
+    print(tau)
 
     return xk
 
@@ -280,6 +281,17 @@ def linesearch(xk, p, obj_fun, tau_init=1.0, min_tau=1e-6):
         x_new = xk + tau * p
 
     return x_new, tau
+
+def linesearch_armijo(xk, p, obj_fun, grad_obj_fun, tau=0.5, c=1e-4, max_iter=10):
+    initial_value = obj_fun(xk)
+    grad_value = grad_obj_fun(xk)
+    grad_dot_p = (grad_value * p).sum()
+
+    for _ in range(max_iter):
+        if obj_fun(xk + tau * p) <= initial_value + c * tau * grad_dot_p:
+            return xk + tau * p, tau
+        tau *= 0.5
+    return xk + tau * p, tau
 
 class ParametersMultilevel:
     def __init__(
