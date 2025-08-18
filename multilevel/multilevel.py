@@ -282,16 +282,18 @@ def linesearch(xk, p, obj_fun, tau_init=1.0, min_tau=1e-6):
 
     return x_new, tau
 
-def linesearch_armijo(xk, p, obj_fun, grad_obj_fun, tau=0.5, c=1e-4, max_iter=10):
-    initial_value = obj_fun(xk)
-    grad_value = grad_obj_fun(xk)
-    grad_dot_p = (grad_value * p).sum()
+def linesearch_armijo(xk, p, obj_fun, grad_obj_fun, tau_init=1.0, c=1e-4, min_tau=1e-6):
+    tau = tau_init
+    f_current = obj_fun(xk)
+    grad_current = grad_obj_fun(xk)
+    grad_dot_p = (grad_current * p).sum()
+    x_new = xk + tau * p
 
-    for _ in range(max_iter):
-        if obj_fun(xk + tau * p) <= initial_value + c * tau * grad_dot_p:
-            return xk + tau * p, tau
-        tau *= 0.5
-    return xk + tau * p, tau
+    while obj_fun(x_new) > f_current + c * tau * grad_dot_p and tau > min_tau:  # Armijo condition
+        tau /= 2
+        x_new = xk + tau * p
+
+    return x_new, tau
 
 class ParametersMultilevel:
     def __init__(
