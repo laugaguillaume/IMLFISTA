@@ -158,6 +158,8 @@ def MultiLevelWavelets(
     param_regularization,
     cst_grad=None,
     device="cpu",
+    use_coherence=False,
+    use_initial_linesearch=False,
 ):
     """
     Multilevel step for image reconstruction with conditional wavelet thresholding.
@@ -196,23 +198,47 @@ def MultiLevelWavelets(
         param_reg_coarse = param_reg_fine
     else:
         param_reg_coarse = param_reg_fine / 4
-    """
-    Send information to the coarse level
-    """
+
     if cst_grad is None:
         cst_grad_fine = None
     else:
         cst_grad_fine = cst_grad.clone()
 
-    # Instead of only getting the approximation, we also get the detail coefficients
-    components = information_transfer.to_coarse_wavelet(xk)
-    xk_coarse = components["LL"]
-    LH, HL, HH = components["LH"], components["HL"], components["HH"]
-    LH0, HL0, HH0 = copy.deepcopy(LH), copy.deepcopy(HL), copy.deepcopy(HH)
+    """
+    Send information to the coarse level
+    """
+
+    if use_initial_linesearch:
+        xk_coarse = information_transfer.to_coarse(xk, xk.shape[-3:])
+
+    else:
+
+        # Instead of only getting the approximation, we also get the detail coefficients
+        components = information_transfer.to_coarse_wavelet(xk)
+        xk_coarse = components["LL"]
+        LH, HL, HH = components["LH"], components["HL"], components["HH"]
+        LH0, HL0, HH0 = copy.deepcopy(LH), copy.deepcopy(HL), copy.deepcopy(HH)
 
     # Initialize the multilevel iteration with the approximation coefficients
     x0_coarse = xk_coarse.clone()
     step_coarse = 1
+
+    if use_coherence:
+        cst_grad, coherence = compute_coherence(
+        xk,
+        xk_coarse,
+        information_transfer,
+        data_fidelity,
+        grad_prior,
+        cst_grad,
+        physics,
+        coarse_physics,
+        observation,
+        coarse_observation,
+        param_reg_fine,
+        param_reg_coarse,
+    )
+        coherence = step_size * coherence.to(device)
 
     """
     Optimize at coarse level
@@ -227,37 +253,68 @@ def MultiLevelWavelets(
                     args_multilevel,
                     param_reg_coarse,
                     cst_grad,
+                    use_coherence=use_coherence,
+                    use_initial_linesearch= use_initial_linesearch,
                 )  # Recursive call if levels > 1
 
+            if use_coherence:
+                # Coarse gradient descent with coherence term + grad prior
+                xk_coarse = (
+                    xk_coarse
+                    - coherence
+                    - step_size
+                    * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
+                    - step_size * grad_prior(xk_coarse, param_reg_coarse)
+                )  # Coarse gradient descent
+            else:
                 # Coarse gradient descent but no coherence term nor grad prior
-            xk_coarse = (
-                xk_coarse
-                - step_size
-                * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
-            )
-        # Old coefficients if we need to compare
-        LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
-        # Threshold the detail coefficients based on the reconstructed approximation
-        LH, HL, HH = conditional_thresholding(
-            {"LH": LH, "HL": HL, "HH": HH}, xk_coarse, global_threshold=param_reg_coarse
-        )
+                xk_coarse = (
+                    xk_coarse
+                    - step_size
+                    * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
+                )
+                # Old coefficients if we need to compare
+                LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
+                # Threshold the detail coefficients based on the reconstructed approximation
+                LH, HL, HH = conditional_thresholding(
+                    {"LH": LH, "HL": HL, "HH": HH}, xk_coarse, global_threshold=param_reg_coarse
+                )
 
         # Plot: detail coefficients before vs after thresholding
         # dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
 
-    # Coarse correction in the wavelet domain
-    coarse_correction = xk_coarse - x0_coarse
-    coarse_correction_components = {
-        "LL": coarse_correction,
-        "LH": LH - LH0,
-        "HL": HL - HL0,
-        "HH": HH - HH0,
-    }
-    coarse_correction_fine = information_transfer.to_fine_wavelet(
-        coarse_correction_components
-    )
     # Line search to find the optimal stepsize in the direction of coarse_correction
-    xk, tau = linesearch(xk, p=coarse_correction_fine, obj_fun=lambda x: data_fidelity.fn(x, observation, physics), grad_obj_fun=lambda x: data_fidelity.grad(x, observation, physics))
+    if use_initial_linesearch:
+        coarse_correction_fine = information_transfer.to_fine(xk_coarse - x0_coarse, xk.shape[-3:])
+        xk, step_coarse = ML_linesearch(
+            xk,
+            level_max,
+            levels + 1,
+            coarse_correction_fine,
+            cst_grad_fine,
+            data_fidelity,
+            observation,
+            physics,
+            grad_prior,
+            denoiser,
+            prior,
+            param_reg_fine,
+            step_coarse * 2,
+        )
+
+    else:
+        # Coarse correction in the wavelet domain
+        coarse_correction = xk_coarse - x0_coarse
+        coarse_correction_components = {
+            "LL": coarse_correction,
+            "LH": LH - LH0,
+            "HL": HL - HL0,
+            "HH": HH - HH0,
+        }
+        coarse_correction_fine = information_transfer.to_fine_wavelet(
+            coarse_correction_components
+        )
+        xk, tau = linesearch(xk, p=coarse_correction_fine, obj_fun=lambda x: data_fidelity.fn(x, observation, physics), grad_obj_fun=lambda x: data_fidelity.grad(x, observation, physics))
 
     return xk
 
