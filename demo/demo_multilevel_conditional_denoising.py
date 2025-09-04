@@ -21,8 +21,6 @@ from multilevel.multilevel import ParametersMultilevel, MultiLevelWavelets, Mult
 
 '''
 A faire :
-guillaume avec cohérence + prox conditionnel
-
 Deux approches :
 x_k+1 = x_k + tau * P(a^* - a0, détails propres-d0)
 = P (a0 + tau(a^* - a0), d0 + tau*(détails propres-d0))
@@ -88,8 +86,8 @@ elif args_prior == "Wavelet":
     denoiser = prior.prox
 
 # Define regularization parameter
-param_regularization = 2*sigma**2 # From the Bayesian interpretation
-# param_regularization = 1e-6
+# param_regularization = 2*sigma**2 # From the Bayesian interpretation
+param_regularization = 1e-6
 
 # Define algorithm parameters
 random_tensor = torch.randn(x_true.shape).to(device)
@@ -276,14 +274,6 @@ time_ML_cond_coherence = end - start
 
 
 #%% ----- IV) Classical single level iterations -----
-if args_prior == "TV":
-    print('Using TV prior')
-    prior = dinv.optim.TVPrior(def_crit=criterion, n_it_max=n_it_max)
-    denoiser = prior.prox
-elif args_prior == "Wavelet":
-    print('Using Wavelet prior')
-    prior = dinv.optim.WaveletPrior(level=4, wv="db8", p=1, device=device)
-    denoiser = prior.prox
 
 crit_SL = 1e10 * np.ones(param_iter)
 psnr_SL = 1e10 * np.ones(param_iter)

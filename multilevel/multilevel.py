@@ -284,7 +284,7 @@ def MultiLevelWavelets(
         # dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
 
     # Line search to find the optimal stepsize in the direction of coarse_correction
-    if use_initial_linesearch:
+    if use_initial_linesearch: # Done with the objective function
         coarse_correction_fine = information_transfer.to_fine(xk_coarse - x0_coarse, xk.shape[-3:])
         xk, step_coarse = ML_linesearch(
             xk,
@@ -314,7 +314,8 @@ def MultiLevelWavelets(
         coarse_correction_fine = information_transfer.to_fine_wavelet(
             coarse_correction_components
         )
-        xk, tau = linesearch(xk, p=coarse_correction_fine, obj_fun=lambda x: data_fidelity.fn(x, observation, physics), grad_obj_fun=lambda x: data_fidelity.grad(x, observation, physics))
+        # Line search with the data fidelity only (and with Armijo condition)
+        xk, step_coarse = linesearch_armijo(xk, p=coarse_correction_fine, obj_fun=lambda x: data_fidelity.fn(x, observation, physics), grad_obj_fun=lambda x: data_fidelity.grad(x, observation, physics))
 
     return xk
 
