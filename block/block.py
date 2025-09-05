@@ -93,10 +93,13 @@ class BlockCoordinateDescent():
         return x_wavelet
 
     def run(self, y, x0, x_true, num_iterations, reg_weight, metrics=False):
+        # Wavelet prior to compute the objective function values
         wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device='cpu')
-
         xk_wavelet = self.img_to_wavelet(x0)
+
+        # Update list for a progressive update of blocks, equivalent to ML FB
         update_list = [(0, 'approx')]
+        # Update list for a full update at each iteration (equivalent to FB)
         #update_list = [(0, 'approx')] + [(level, 'details') for level in range(self.max_levels)]
         if metrics:
             loss = []
@@ -111,6 +114,7 @@ class BlockCoordinateDescent():
             # Update detail coefficients from coarse to fine
             for level in range(self.max_levels):
                 xk_wavelet = self.update_blocks(xk_wavelet, y, update_list=update_list, reg_weight=reg_weight)
+                # Add next detail level to update list
                 update_list.append((level, 'details'))
 
 
@@ -119,6 +123,7 @@ class BlockCoordinateDescent():
 
 
     def FB(self, y, num_iterations, reg_weight, metrics=False):
+        # Wavelet prior to compute the objective function values AND to use in the proximal step
         wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device='cpu')
         xk = copy.deepcopy(y)
         if metrics:
@@ -141,7 +146,7 @@ if __name__ == "__main__":
 
     J = 3
 
-    # Test BCD
+    # Physics
     filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
     physics = dinv.physics.Blur(filter_0, device=device, padding="reflect")
     seed = torch.manual_seed(0)  # Random seed for reproducibility
@@ -149,24 +154,31 @@ if __name__ == "__main__":
     sigma = 0.01
     physics.noise_model = dinv.physics.GaussianNoise(sigma=sigma)
 
-    # Construct observation and display original image
+    # Observation
     y = physics(x_true)
 
+    # Objective function
     data_fidelity = dinv.optim.L2()
+    #prior = dinv.optim.TVPrior(n_it_max=50)
     prior = dinv.optim.L1Prior()
+    reg_weight = 0.1
 
-    Anorm2 = physics.compute_norm(x_true)
-    stepsize = 0.01/Anorm2
+    # Parameters
+    n_iter = 1000
+    Anorm2 = physics.compute_norm(x_true).item()
+    stepsize = 0.005/Anorm2
     print(f"Stepsize: {stepsize}")
 
     bcd = BlockCoordinateDescent(x_true.shape, 'haar', physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
 
-    y = physics(x_true)
     x0 = y.clone()
 
-    n_iter = 200
-    x_recon, loss = bcd.run(y, x0, x_true=x_true, num_iterations=n_iter, reg_weight=0, metrics=True)
-    x_recon_fb, loss_fb = bcd.FB(y, num_iterations=n_iter, reg_weight=0, metrics=True)
+    x_recon, loss = bcd.run(y, x0, x_true=x_true, num_iterations=n_iter, reg_weight=reg_weight, metrics=True)
+    x_recon_fb, loss_fb = bcd.FB(y, num_iterations=n_iter, reg_weight=reg_weight, metrics=True)
+
+
+    psnrs = [PSNR(y, x_true).item(), PSNR(x_recon_fb, x_true).item(), PSNR(x_recon, x_true).item()]
+    psnrs = [f"{p:.2f}" for p in psnrs]
 
     # Plot loss
     plt.figure()
@@ -179,4 +191,4 @@ if __name__ == "__main__":
     plt.show()
 
     #x_recon = x_recon_fb
-    dinv.utils.plot([x_true, y, x_recon_fb, x_recon], titles=['Original', 'Blurred', 'Reconstructed (FB)', 'Reconstructed (BCD)'], cmap='gray')
+    dinv.utils.plot([x_true, y, x_recon_fb, x_recon], titles=['Original', f'Observation \nPSNR: {psnrs[0]}', f'Reconstructed (FB) \nPSNR: {psnrs[1]}', f'Reconstructed (BCD) \nPSNR: {psnrs[2]}'], cmap='gray')
