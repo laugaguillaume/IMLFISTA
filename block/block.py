@@ -4,6 +4,10 @@ import pywt
 import deepinv as dinv
 import matplotlib.pyplot as plt
 import copy
+import time
+import os
+import json
+from datetime import datetime
 
 PSNR = dinv.metric.PSNR()
 
@@ -42,6 +46,43 @@ class Projection():
 
         return coeffs_zero
 
+class UpdateList():
+    def __init__(self, max_levels):
+        self.max_levels = max_levels
+
+    def get_list(self, type='MLFB'):
+        if type == 'MLFB':
+            return self.create_update_list_MLFB()
+        elif type == 'FB':
+            return self.create_update_list_FB()
+        elif type == 'MLFBcond':
+            return self.create_update_list_MLFBcond()
+        else:
+            raise ValueError("Invalid type. Choose 'MLFB', 'FB' or 'MLFBcond'.")
+
+    def create_update_list_MLFB(self):
+        update_list = [[(0, 'approx')]]
+        updated_blocks = [(0, 'approx')]
+        for i in range(self.max_levels):
+            updated_blocks.append((i, 'details'))
+            update_list.append(copy.deepcopy(updated_blocks))
+        return update_list
+
+    def create_update_list_FB(self):
+        update_list = []
+        updated_blocks = [(0, 'approx')] + [(level, 'details') for level in range(self.max_levels)]
+        update_list = [copy.deepcopy(updated_blocks) for _ in range(self.max_levels)]
+        return update_list
+
+    def create_update_list_MLFBcond(self):
+        update_list = [[(0, 'approx')]]
+        updated_blocks = [(0, 'approx')]
+        for i in range(self.max_levels):
+            updated_blocks.append((i, 'details'))
+            update_list.append(copy.deepcopy(updated_blocks))
+            update_list.append([(i, 'details')])
+        return update_list
+
 class BlockCoordinateDescent():
     def __init__(self, img_size, wv_type, physics, data_fidelity, prior, max_levels, stepsize=1e-3):
         self.img_size = img_size
@@ -54,6 +95,8 @@ class BlockCoordinateDescent():
 
         self.proj = Projection(self.img_size, self.wv_type, self.max_levels)
 
+        self.n_iter_tot = 0
+
     def reconstruct_image(self, coeffs):
         """Reconstruct image from wavelet coefficients"""
         coeffs_np = wavelet_torch_to_numpy(coeffs)
@@ -65,7 +108,7 @@ class BlockCoordinateDescent():
         coeffs = pywt.wavedec2(x.cpu().numpy(), self.wv_type, level=self.max_levels)
         return wavelet_numpy_to_torch(coeffs)
 
-    def update_blocks(self, x_wavelet, y, update_list, reg_weight):
+    def update_blocks(self, x_wavelet, y, updated_blocks, reg_weight):
         # Update list is a list of tuples (level, mode) where mode is 'approx' or 'details'
 
         x_img = self.reconstruct_image(x_wavelet)
@@ -73,7 +116,8 @@ class BlockCoordinateDescent():
         grad = self.data_fidelity.grad(x_img, y, self.physics)
         grad_wavelet = self.img_to_wavelet(grad)
 
-        for level, mode in update_list:
+        for level, mode in updated_blocks:
+            self.n_iter_tot += 1
             if mode == 'approx':
                 coeff = self.proj.project(x_wavelet, mode, level=0)
 
@@ -90,36 +134,40 @@ class BlockCoordinateDescent():
 
                     x_wavelet[level + 1][c] = coeff[c]
 
+            else:
+                raise ValueError("Invalid mode. Choose 'details' or 'approx'.")
+
         return x_wavelet
 
-    def run(self, y, x0, x_true, num_iterations, reg_weight, metrics=False):
+    def run(self, y, x0, x_true, n_iter, reg_weight, update_mode='MLFB', metrics=False):
         # Wavelet prior to compute the objective function values
         wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device='cpu')
         xk_wavelet = self.img_to_wavelet(x0)
 
-        # Update list for a progressive update of blocks, equivalent to ML FB
-        update_list = [(0, 'approx')]
-        # Update list for a full update at each iteration (equivalent to FB)
-        #update_list = [(0, 'approx')] + [(level, 'details') for level in range(self.max_levels)]
-        if metrics:
-            loss = []
+        # Update list
+        update_list = UpdateList(self.max_levels).get_list(type=update_mode)
+        print(update_list)
 
-        for it in range(num_iterations):
+        if metrics:
+            loss, times = [], []
+            start = time.process_time()
+
+        for it in range(n_iter):
             if metrics:
                 x_recon = self.reconstruct_image(xk_wavelet)
                 crit = self.data_fidelity.fn(x_recon, y, self.physics).item() + reg_weight * wavelet_prior.fn(x_recon).item()
-            print(f"Iteration {it}/{num_iterations}, Crit: {crit:.2f}")
-            loss.append(crit)
+                print(f"Iteration {it}/{n_iter}, Crit: {crit:.2f}")
+                loss.append(crit)
+                times.append(time.process_time() - start)
 
             # Update detail coefficients from coarse to fine
-            for level in range(self.max_levels):
-                xk_wavelet = self.update_blocks(xk_wavelet, y, update_list=update_list, reg_weight=reg_weight)
-                # Add next detail level to update list
-                update_list.append((level, 'details'))
-
+            for updated_blocks in update_list:
+                xk_wavelet = self.update_blocks(xk_wavelet, y, updated_blocks=updated_blocks, reg_weight=reg_weight)
 
         x_recon = self.reconstruct_image(xk_wavelet)
-        return x_recon, loss
+        if metrics:
+            return x_recon, loss, times
+        return x_recon
 
 
     def FB(self, y, num_iterations, reg_weight, metrics=False):
@@ -127,24 +175,34 @@ class BlockCoordinateDescent():
         wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device='cpu')
         xk = copy.deepcopy(y)
         if metrics:
-            loss = []
+            loss, times = [], []
+            start = time.process_time()
 
         for it in range(num_iterations):
             if metrics:
                 crit = self.data_fidelity.fn(xk, y, self.physics).item() + reg_weight * wavelet_prior.fn(xk).item()
                 print(f"Iteration {it}/{num_iterations}, Crit: {crit:.2f}")
                 loss.append(crit)
+                times.append(time.process_time() - start)
             xk = xk - self.stepsize * self.data_fidelity.grad(xk, y, self.physics)
             xk = wavelet_prior.prox(xk, gamma=reg_weight*self.stepsize)
 
-        return xk, loss
+        if metrics:
+            return xk, loss, times
+        return xk
 
 
 if __name__ == "__main__":
+    import os
+    import json
+    from datetime import datetime
+
     device = torch.device('cpu')
     x_true = dinv.utils.load_example("butterfly.png", device=device)
 
+    # Wavelet parameters
     J = 3
+    wv_type = 'haar'
 
     # Physics
     filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
@@ -161,34 +219,73 @@ if __name__ == "__main__":
     data_fidelity = dinv.optim.L2()
     #prior = dinv.optim.TVPrior(n_it_max=50)
     prior = dinv.optim.L1Prior()
-    reg_weight = 0.1
+    reg_weight = 1e-2
 
     # Parameters
     n_iter = 1000
     Anorm2 = physics.compute_norm(x_true).item()
-    stepsize = 0.005/Anorm2
+    stepsize = 0.1/Anorm2
+    update_mode = 'FB'  # 'MLFB', 'FB' or 'MLFBcond'
     print(f"Stepsize: {stepsize}")
 
-    bcd = BlockCoordinateDescent(x_true.shape, 'haar', physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
+    EXPERIMENTS_ROOT = "/home/edgar/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/block_coordinate_descent"
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    exp_name = f"exp_{timestamp}_J{J}_mode{update_mode}_reg{reg_weight}_niter{n_iter}_sigma{sigma}"
+    exp_dir = os.path.join(EXPERIMENTS_ROOT, exp_name)
+    os.makedirs(exp_dir, exist_ok=True)
+
+    params = {
+        "image": "butterfly.png",
+        "physics": "blur + Gaussian noise",
+        "sigma": sigma,
+        "reg_weight": reg_weight,
+        "n_iter": n_iter,
+        "stepsize": stepsize,
+        "J": J,
+        "wavelet": wv_type,
+        "update_mode": update_mode,
+        "comment": "With approx thresholding in BCD"
+    }
+    params_path = os.path.join(exp_dir, "params.json")
+    with open(params_path, "w") as f:
+        json.dump(params, f, indent=4)
+
+    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
 
     x0 = y.clone()
 
-    x_recon, loss = bcd.run(y, x0, x_true=x_true, num_iterations=n_iter, reg_weight=reg_weight, metrics=True)
-    x_recon_fb, loss_fb = bcd.FB(y, num_iterations=n_iter, reg_weight=reg_weight, metrics=True)
+    x_recon, loss, times = bcd.run(y, x0, x_true=x_true, n_iter=n_iter, reg_weight=reg_weight, update_mode=update_mode, metrics=True)
+    x_recon_fb, loss_fb, times_fb = bcd.FB(y, num_iterations=n_iter, reg_weight=reg_weight, metrics=True)
 
+    # To have roughly the same number of iterations for FB and BCD
+    '''n_iter_tot_bcd = int(bcd.n_iter_tot/4)
+    x_recon_fb, loss_fb = bcd.FB(y, num_iterations=n_iter_tot_bcd, reg_weight=reg_weight, metrics=True)
+    print(f"Total number of iterations BCD: {n_iter_tot_bcd}")
+    loss =  np.array(loss).repeat(int(n_iter_tot_bcd/n_iter))'''
 
     psnrs = [PSNR(y, x_true).item(), PSNR(x_recon_fb, x_true).item(), PSNR(x_recon, x_true).item()]
     psnrs = [f"{p:.2f}" for p in psnrs]
 
-    # Plot loss
+    # Plot loss vs iterationns
     plt.figure()
-    plt.plot(loss, label='BCD')
+    plt.plot(loss, label=f'BCD {update_mode}')
     plt.plot(loss_fb, label='FB')
     plt.xlabel('Iteration')
     plt.ylabel('Loss')
     plt.title('Loss over Iterations')
     plt.legend()
+    plt.savefig(os.path.join(exp_dir, "loss_iterations.pdf"))
     plt.show()
 
-    #x_recon = x_recon_fb
-    dinv.utils.plot([x_true, y, x_recon_fb, x_recon], titles=['Original', f'Observation \nPSNR: {psnrs[0]}', f'Reconstructed (FB) \nPSNR: {psnrs[1]}', f'Reconstructed (BCD) \nPSNR: {psnrs[2]}'], cmap='gray')
+    # Plot loss vs time
+    plt.figure()
+    plt.plot(times, loss, label=f'BCD {update_mode}')
+    plt.plot(times_fb, loss_fb, label='FB')
+    plt.xlabel('CPU time (s)')
+    plt.ylabel('Loss')
+    plt.title('Loss over CPU Time')
+    plt.legend()
+    plt.savefig(os.path.join(exp_dir, "loss_time.pdf"))
+    plt.show()
+
+    dinv.utils.plot([x_true, y, x_recon_fb, x_recon], titles=['Original', f'Observation \nPSNR: {psnrs[0]}', f'Reconstructed (FB) \nPSNR: {psnrs[1]}', f'Reconstructed (BCD) \nPSNR: {psnrs[2]}'], cmap='gray', save_fn=os.path.join(exp_dir, "reconstructions.pdf"))
