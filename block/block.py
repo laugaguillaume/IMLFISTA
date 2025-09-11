@@ -225,7 +225,7 @@ if __name__ == "__main__":
     n_iter = 1000
     Anorm2 = physics.compute_norm(x_true).item()
     stepsize = 0.1/Anorm2
-    update_mode = 'FB'  # 'MLFB', 'FB' or 'MLFBcond'
+    update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
     print(f"Stepsize: {stepsize}")
 
     EXPERIMENTS_ROOT = "/home/edgar/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/block_coordinate_descent"
