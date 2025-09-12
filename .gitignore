@@ -3,3 +3,4 @@ __pycache__/
 *.py[cod]
 *.pyo
 /demo/results_ml_fista
+venv/
