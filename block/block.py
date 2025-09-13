@@ -8,6 +8,7 @@ import time
 import os
 import json
 from datetime import datetime
+import platform
 
 PSNR = dinv.metric.PSNR()
 
@@ -43,6 +44,8 @@ class Projection():
             coeffs_zero[level + 1] = coeff
         else:
             raise ValueError("Invalid mode. Choose 'details' or 'approx'.")
+
+        #coeffs_recon = wavelet_numpy_to_torch(pywt.wavedec2(zero, self.wv_type, level=self.num_levels))
 
         return coeffs_zero
 
@@ -112,9 +115,26 @@ class BlockCoordinateDescent():
         # Update list is a list of tuples (level, mode) where mode is 'approx' or 'details'
 
         x_img = self.reconstruct_image(x_wavelet)
+        y_wavelet = self.img_to_wavelet(y)
 
         grad = self.data_fidelity.grad(x_img, y, self.physics)
         grad_wavelet = self.img_to_wavelet(grad)
+
+        approx = x_wavelet[0]
+        APiVTa = self.physics.A(self.reconstruct_image(self.proj.project_adjoint(approx, mode="approx", level=0)))
+
+        PiVTPiVy = self.proj.project_adjoint(  # - Π_V^* Π_V y
+                    self.proj.project(y_wavelet, mode="details", level=0),
+                    mode="details", level=0
+                )
+        PiVTPiVy = self.reconstruct_image(PiVTPiVy)
+
+        adj_img = self.physics.A_adjoint(APiVTa - PiVTPiVy)         # image tensor
+        adj_wavelet = self.img_to_wavelet(adj_img)                 # list of coeffs (torch)
+        grad_proj = self.proj.project(adj_wavelet, mode="details", level=0)
+
+        #dinv.utils.plot(grad_proj[0])
+        #print("Coherence norm :", torch.norm(grad_proj))
 
         for level, mode in updated_blocks:
             self.n_iter_tot += 1
@@ -146,7 +166,7 @@ class BlockCoordinateDescent():
 
         # Update list
         update_list = UpdateList(self.max_levels).get_list(type=update_mode)
-        print(update_list)
+        #print(update_list)
 
         if metrics:
             loss, times = [], []
@@ -228,7 +248,11 @@ if __name__ == "__main__":
     update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
     print(f"Stepsize: {stepsize}")
 
-    EXPERIMENTS_ROOT = "/home/edgar/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/block_coordinate_descent"
+    if platform.system() == "Darwin":  # macOS
+        EXPERIMENTS_ROOT = "/Users/edgardesainte-mareville/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/blocks"
+    else:  # Linux ou autre
+        EXPERIMENTS_ROOT = "/home/edgar/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/blocks"
+
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     exp_name = f"exp_{timestamp}_J{J}_mode{update_mode}_reg{reg_weight}_niter{n_iter}_sigma{sigma}"
     exp_dir = os.path.join(EXPERIMENTS_ROOT, exp_name)
