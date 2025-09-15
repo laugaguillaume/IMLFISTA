@@ -36,7 +36,7 @@ prior_type = "TV"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 100
+n_iter = 10
 reg_weight = 1e-2
 Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.1/Anorm2
@@ -268,6 +268,7 @@ plt.figure(figsize=(10, 6))
 for method_name, result in results.items():
     if result['psnr']:
         plt.plot(result['psnr'], label=method_name)
+plt.axvline(x=multilevel_iter, color='red', linestyle='--', label=f"End of Multilevel iterations (total : {multilevel_iter})")
 plt.xlabel('Iteration')
 plt.ylabel('PSNR (dB)')
 plt.title('PSNR vs Iteration for Different Methods')
@@ -281,6 +282,7 @@ plt.figure(figsize=(10, 6))
 for method_name, result in results.items():
     if result['loss']:
         plt.plot(result['loss'], label=method_name)
+plt.axvline(x=multilevel_iter, color='red', linestyle='--', label=f"End of Multilevel iterations (total : {multilevel_iter})")
 plt.xlabel('Iteration')
 plt.ylabel('Loss')
 plt.title('Loss vs Iteration for Different Methods')

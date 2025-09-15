@@ -129,12 +129,16 @@ class BlockCoordinateDescent():
                 )
         PiVTPiVy = self.reconstruct_image(PiVTPiVy)
 
-        adj_img = self.physics.A_adjoint(APiVTa - PiVTPiVy)         # image tensor
-        adj_wavelet = self.img_to_wavelet(adj_img)                 # list of coeffs (torch)
-        grad_proj = self.proj.project(adj_wavelet, mode="details", level=0)
+        adj_img = self.physics.A_adjoint(APiVTa - PiVTPiVy)         # image tensor (Image domain)
+        adj_wavelet = self.img_to_wavelet(adj_img)                  # list of coeffs (Wavelet domain)
+        grad_proj = self.proj.project(adj_wavelet, mode="details", level=0) # list of 3 detail coeffs (Wavelet domain)
+
+        grad_proj_img = self.reconstruct_image(self.proj.project_adjoint(grad_proj, mode="details", level=0)) # project_adjoint adds zeros to other coeffs
+        dinv.utils.plot([grad_proj_img])
 
         #dinv.utils.plot(grad_proj[0])
-        #print("Coherence norm :", torch.norm(grad_proj))
+        print("Coherence shape :", grad_proj.shape)
+        print("Coherence norm :", torch.norm(grad_proj_img))
 
         for level, mode in updated_blocks:
             self.n_iter_tot += 1
@@ -227,6 +231,7 @@ if __name__ == "__main__":
     # Physics
     filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
     physics = dinv.physics.Blur(filter_0, device=device, padding="reflect")
+    #physics = dinv.physics.Inpainting(mask=0.7, img_size=x_true.shape[1:])
     seed = torch.manual_seed(0)  # Random seed for reproducibility
 
     sigma = 0.01
@@ -235,6 +240,8 @@ if __name__ == "__main__":
     # Observation
     y = physics(x_true)
 
+    dinv.utils.plot([x_true, y], titles=['Original', 'Observation'], cmap='gray')
+
     # Objective function
     data_fidelity = dinv.optim.L2()
     #prior = dinv.optim.TVPrior(n_it_max=50)
@@ -242,7 +249,7 @@ if __name__ == "__main__":
     reg_weight = 1e-2
 
     # Parameters
-    n_iter = 1000
+    n_iter = 100
     Anorm2 = physics.compute_norm(x_true).item()
     stepsize = 0.1/Anorm2
     update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'

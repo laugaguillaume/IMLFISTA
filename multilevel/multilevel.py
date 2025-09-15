@@ -20,6 +20,8 @@ from multilevel.info_transfer import DownsamplingTransfer, create_filter
 from deepinv.physics import Physics, Downsampling
 from deepinv.models import Denoiser
 
+from multilevel.utils import nabla, local_average, get_approximation_previous_scale, comparative_plot_wavelets
+
 
 def MultiLevel(
     xk,
@@ -160,6 +162,7 @@ def MultiLevelWavelets(
     device="cpu",
     use_coherence=False,
     use_initial_linesearch=False,
+    no_intermediate_GD=False,
 ):
     """
     Multilevel step for image reconstruction with conditional wavelet thresholding.
@@ -243,45 +246,67 @@ def MultiLevelWavelets(
     """
     Optimize at coarse level
     """
-    with torch.no_grad():
-        for k in range(param_coarse_iter):
-            if levels > 1 and k < max_ML_steps:
-                xk_coarse = MultiLevelWavelets(
-                    xk_coarse,
-                    level_max,
-                    levels - 1,
-                    args_multilevel,
-                    param_reg_coarse,
-                    cst_grad,
-                    use_coherence=use_coherence,
-                    use_initial_linesearch= use_initial_linesearch,
-                )  # Recursive call if levels > 1
-
-            if use_coherence:
-                # Coarse gradient descent with coherence term + grad prior
-                xk_coarse = (
-                    xk_coarse
-                    - coherence
-                    - step_size
-                    * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
-                    - step_size * grad_prior(xk_coarse, param_reg_coarse)
-                )  # Coarse gradient descent
-            else:
-                # Coarse gradient descent but no coherence term nor grad prior
-                xk_coarse = (
-                    xk_coarse
-                    - step_size
-                    * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
+    if no_intermediate_GD:
+        with torch.no_grad():
+            print(f'Level {levels}')
+            if levels == 1:
+                for k in range(max_ML_steps):
+                    print(f'GD at coarse level (iteration {k})')
+                    # GD only at coarser scale
+                    xk_coarse = (
+                        xk_coarse
+                        - step_size * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
                 )
-                # Old coefficients if we need to compare
-                LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
-                # Threshold the detail coefficients based on the reconstructed approximation
+            else:
+                print(f'No GD at level {levels}, only thresholding')
+                # no GD, only thresholding
                 LH, HL, HH = conditional_thresholding(
                     {"LH": LH, "HL": HL, "HH": HH}, xk_coarse, global_threshold=param_reg_coarse
                 )
+    else:
+        with torch.no_grad():
+            for k in range(param_coarse_iter):
+                print(f'Iteration {k} at level {levels}')
+                if levels > 1 and k < max_ML_steps:
+                    xk_coarse = MultiLevelWavelets(
+                        xk_coarse,
+                        level_max,
+                        levels - 1,
+                        args_multilevel,
+                        param_reg_coarse,
+                        cst_grad,
+                        use_coherence=use_coherence,
+                        use_initial_linesearch= use_initial_linesearch,
+                        no_intermediate_GD=no_intermediate_GD,
+                    )  # Recursive call if levels > 1
 
-        # Plot: detail coefficients before vs after thresholding
-        # dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
+                if use_coherence:
+                    print('Using coherence term')
+                    # Coarse gradient descent with coherence term + grad prior
+                    xk_coarse = (
+                        xk_coarse
+                        - coherence
+                        - step_size
+                        * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
+                        - step_size * grad_prior(xk_coarse, param_reg_coarse)
+                    )  # Coarse gradient descent
+                else:
+                    print('Standard intermediate gradient descent')
+                    # Coarse gradient descent but no coherence term nor grad prior
+                    xk_coarse = (
+                        xk_coarse
+                        - step_size
+                        * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
+                    )
+                    # Old coefficients if we need to compare
+                    LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
+                    # Threshold the detail coefficients based on the reconstructed approximation
+                    LH, HL, HH = conditional_thresholding(
+                        {"LH": LH, "HL": HL, "HH": HH}, xk_coarse, global_threshold=param_reg_coarse
+                    )
+
+            # Plot: detail coefficients before vs after thresholding
+            # dinv.utils.plot([LH_prev, LH], titles=['LH previous', 'LH current'], cmap='gray', suptitle='LH Coarse Level')
 
     # Line search to find the optimal stepsize in the direction of coarse_correction
     if use_initial_linesearch: # Done with the objective function
@@ -827,6 +852,117 @@ class WaveletDenoiserConditional(Denoiser):
         out = x.clone()
         out[out.abs() < gamma] = 0
         return out
+
+
+# Previous wavelet thresholding / GD + thresholding class to compare methods
+
+class WaveletThresholding:
+    def __init__(self, prior, data_fidelity, physics, wavelet_type='haar', n_levels=3, stepsize=1e-3, device=torch.device('cpu'), grad_as_wavelet=False):
+        self.prior = prior
+        self.data_fidelity = data_fidelity
+        self.physics = physics
+        self.wavelet_type = wavelet_type
+        self.n_levels = n_levels
+        self.stepsize = stepsize
+        self.device = device
+        self.grad_as_wavelet = grad_as_wavelet
+
+    def threshold(self, wavelet_coeffs_noisy, wavelet_coeffs_true, gamma=1, conditional=True, direction_coeff=None, kernel_size=None, print_psnr=False, plot=None, grad_as_wavelet=False):
+
+        self.grad_as_wavelet = grad_as_wavelet
+
+        # Unpack and deep copy inputs
+        approx_noisy, *details_noisy = copy.deepcopy(wavelet_coeffs_noisy)  # Noisy approx and details : to be modified
+        approx = copy.deepcopy(approx_noisy)                                # Initial approximation (used for reconstruction)
+        approx_init = copy.deepcopy(approx_noisy)                           # Initial approximation (untouched, used for final reconstruction)
+        approx_true, *details_true = wavelet_coeffs_true                    # True approximation and details (used for comparison)
+
+        for level in range(self.n_levels):
+
+            if level == 0:
+                grad = self.physics.A_adjoint(self.physics.A(approx) - self.physics.A_adjoint(approx_noisy))
+                approx = approx - self.stepsize * grad
+
+            gamma_level = gamma / (2 ** (self.n_levels - level))
+            if kernel_size:
+                nabla_approx = local_average(approx, kernel_size=kernel_size)
+            else:
+                nabla_approx = nabla(approx)
+            grad_hor, grad_ver = nabla_approx[..., 0], nabla_approx[..., 1]
+
+            if self.grad_as_wavelet:
+                # Computes the stationnary wavelet transform of the approximation coefficients (convolution without downsampling)
+                stationnary_transform = pywt.swt2(approx.cpu().numpy(), wavelet=self.wavelet_type, level=1)
+                grad_as_wavelets_hor, grad_as_wavelets_ver, grad_as_wavelets_diag = stationnary_transform[0][1][0], stationnary_transform[0][1][1], stationnary_transform[0][1][2]
+
+                grad_hor = torch.tensor(grad_as_wavelets_hor, device=self.device, dtype=approx.dtype)
+                grad_ver = torch.tensor(grad_as_wavelets_ver, device=self.device, dtype=approx.dtype)
+                grad_diag = torch.tensor(grad_as_wavelets_diag, device=self.device, dtype=approx.dtype)
+
+                gamma_hor = gamma_level / torch.sqrt(direction_coeff * grad_hor**2 + (1 - direction_coeff) * grad_ver**2)
+                gamma_ver = gamma_level / torch.sqrt((1-direction_coeff) * grad_hor**2 + direction_coeff * grad_ver**2)
+                gamma_diag = gamma_level / abs(grad_diag)
+
+                gammas = [gamma_hor, gamma_ver, gamma_diag]
+
+            if conditional:
+                if direction_coeff:
+                    gamma_hor = gamma_level / torch.sqrt(direction_coeff * grad_hor**2 + (1 - direction_coeff) * grad_ver**2)
+                    gamma_ver = gamma_level / torch.sqrt((1-direction_coeff) * grad_hor**2 + direction_coeff * grad_ver**2)
+                    gamma_diag = gamma_level / torch.sqrt(grad_hor**2 + grad_ver**2)
+
+                    '''gamma_hor = gamma_level / torch.sqrt(direction_coeff * grad_hor**2 + (1 - direction_coeff) * grad_ver**2)
+                    gamma_ver = gamma_level / torch.sqrt((1-direction_coeff) * grad_hor**2 + direction_coeff * grad_ver**2)
+                    gamma_diag = gamma_level / abs(grad_diag)'''
+
+                    gammas = [gamma_hor, gamma_ver, gamma_diag]
+                else:
+                    gamma_iso = gamma_level / torch.sqrt(grad_hor**2 + grad_ver**2)
+                    gammas = [gamma_iso] * 3
+            else:
+                gammas = [gamma_level] * 3
+
+            # Apply proximal operator to each subband
+            for c in range(3):
+                details_noisy[level][c] = self.prior.prox(details_noisy[level][c], gamma=gammas[c])
+
+                if print_psnr:
+                    print(f'PSNR true vs reconstructed details at scale {self.n_levels-level}, coefficient {c+1}: {PSNR()(details_noisy[level][c], details_true[level][c]).item():.3f}')
+
+            if plot:
+                comparative_plot_wavelets( # Print the PSNR between the true and updated coefficients
+                    [
+                        (approx, *details_noisy),
+                        (approx, *wavelet_coeffs_noisy[1:]),
+                        (approx_true, *details_true)
+                        ],
+                    level=level,
+                    labels=[
+                        'Updated coefficients',
+                        'Noisy coefficients',
+                        'True coefficients'
+                        ],
+                    save_fn=f'{plot}/coeffs_scale_{self.n_levels-level}.png'
+                )
+
+                # Compute the true value of the approximation coefficients for the next scale
+                approx_true = get_approximation_previous_scale(
+                    (approx_true, *details_true[level:]),
+                    wavelet_type=self.wavelet_type
+                )
+
+            # Reconstruct current approximation from updated detail coefficients
+            approx = get_approximation_previous_scale(
+                (approx, *details_noisy[level:]),
+                wavelet_type=self.wavelet_type
+            )
+
+        return (approx_init, *details_noisy)
+
+    def gradient_descent(xk, y, level_physics, stepsize=1e-3, n_iter=5):
+        for i in range(n_iter):
+            xk = xk - stepsize * level_physics.A_adjoint(level_physics.A(xk) - y)
+        return xk
 
 
 if __name__ == "__main__":
