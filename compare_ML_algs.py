@@ -7,6 +7,7 @@ Created on May 2025
 
 # pip install git+https://github.com/deepinv/deepinv.git#egg=deepinv
 import deepinv as dinv
+import pywt
 import torch
 from torchvision.io import read_image
 import numpy as np
@@ -16,11 +17,11 @@ import scipy.io as sio
 import copy
 import time
 import sys
-from deepinv.loss.metric import PSNR
 from deepinv.models import Denoiser
 from multilevel.multilevel import ParametersMultilevel, MultiLevelWavelets, MultiLevel, WaveletDenoiserConditional, WaveletThresholding
+from block.utils import wavelet_numpy_to_torch, wavelet_torch_to_numpy
 
-perf_psnr = PSNR()
+perf_psnr = dinv.metric.PSNR()
 
 plt.rcParams["text.usetex"] = True  # Activate LaTeX rendering
 
@@ -129,21 +130,30 @@ args_multilevel = ParametersMultilevel(
 
 #%% ----- Multilevel Coarse GD and Conditional Denoising (MLCGDCD) -----
 
-#l1_prior = dinv.optim.L1Prior()
+l1_prior = dinv.optim.L1Prior()
+wavelet_type = 'haar'
 
-#WT = WaveletThresholding(prior=l1_prior, wavelet_type='haar', n_levels=levels, device=device)
+WT = WaveletThresholding(prior=l1_prior, y=y, data_fidelity=data_fidelity, physics=physics, wavelet_type=wavelet_type, n_levels=levels, stepsize=param_gamma, device=device)
+
+L = lambda x: pywt.wavedec2(x, wavelet=wavelet_type, level=levels, mode='periodization')
+L_adjoint = lambda x: pywt.waverec2(x, wavelet=wavelet_type, mode='periodization')
+
+coefficients_x_true = [torch.tensor(coeff) for coeff in L(x_true)]
+coefficients_y = [torch.tensor(coeff) for coeff in L(y)]
 
 x0 = back.clone()
-x_mlcgdcd = MultiLevelWavelets(
-    x0,
-    levels,
-    levels - 1,
-    args_multilevel,
-    param_regularization,
-    cst_grad,
-    device,
-    no_intermediate_GD=True
+x_mlcgdcd_coeffs = WT.threshold(
+    wavelet_coeffs_noisy=coefficients_y,
+    wavelet_coeffs_true=coefficients_x_true,
+    gamma=param_regularization,
+    conditional=True,
+    n_iter_coarse=20
 )
+
+x_mlcgdcd_coeffs = wavelet_torch_to_numpy(x_mlcgdcd_coeffs)
+
+x_mlcgdcd = torch.tensor(L_adjoint(x_mlcgdcd_coeffs), device=device, dtype=torch.float32)
+
 psnr_mlcgdcd = perf_psnr(x_true, x_mlcgdcd).item()
 
 psnrs_formatted = np.round(np.array([psnr_y, psnr_mlcgdcd]), 3)

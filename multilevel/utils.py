@@ -2,7 +2,9 @@ import deepinv as dinv
 import torch
 import torch.nn.functional as F
 import pywt
-from deepinv.utils.metric import PSNR
+
+
+PSNR = dinv.metric.PSNR()
 
 
 def nabla(I):

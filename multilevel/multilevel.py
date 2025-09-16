@@ -857,7 +857,8 @@ class WaveletDenoiserConditional(Denoiser):
 # Previous wavelet thresholding / GD + thresholding class to compare methods
 
 class WaveletThresholding:
-    def __init__(self, prior, data_fidelity, physics, wavelet_type='haar', n_levels=3, stepsize=1e-3, device=torch.device('cpu'), grad_as_wavelet=False):
+    def __init__(self, y, prior, data_fidelity, physics, wavelet_type='haar', n_levels=3, stepsize=1e-3, device=torch.device('cpu'), grad_as_wavelet=False):
+        self.y = y
         self.prior = prior
         self.data_fidelity = data_fidelity
         self.physics = physics
@@ -867,7 +868,16 @@ class WaveletThresholding:
         self.device = device
         self.grad_as_wavelet = grad_as_wavelet
 
-    def threshold(self, wavelet_coeffs_noisy, wavelet_coeffs_true, gamma=1, conditional=True, direction_coeff=None, kernel_size=None, print_psnr=False, plot=None, grad_as_wavelet=False):
+    def threshold(self, wavelet_coeffs_noisy, wavelet_coeffs_true, gamma=1, conditional=True, n_iter_coarse= 20, direction_coeff=None, kernel_size=None, print_psnr=False, plot=None, grad_as_wavelet=False):
+
+        target_shape = self.y.shape[-2:]
+        filter = 'haar'
+        self.information_transfer = DownsamplingTransfer(create_filter(filter)).to(self.device)
+
+        # Génère coarse_physics
+        self.coarse_physics = create_coarse_physics(
+            self.physics, target_shape, self.n_levels, filter, self.device
+        )
 
         self.grad_as_wavelet = grad_as_wavelet
 
@@ -880,8 +890,17 @@ class WaveletThresholding:
         for level in range(self.n_levels):
 
             if level == 0:
-                grad = self.physics.A_adjoint(self.physics.A(approx) - self.physics.A_adjoint(approx_noisy))
-                approx = approx - self.stepsize * grad
+                filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
+                level_physics = dinv.physics.Blur(filter_0, device=self.device, padding="reflect")
+
+                y_coarse = approx_noisy
+
+                approx_old = approx.clone()
+                for k in range(n_iter_coarse):
+                    grad = self.data_fidelity.grad(approx, y_coarse, level_physics)
+                    approx = approx - self.stepsize * grad
+
+                dinv.utils.plot([approx_true, approx_old, approx], titles=['Approx ground truth', 'Approx before GD', 'Approx after GD'])
 
             gamma_level = gamma / (2 ** (self.n_levels - level))
             if kernel_size:

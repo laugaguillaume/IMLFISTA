@@ -14,6 +14,10 @@ PSNR = dinv.metric.PSNR()
 
 from block.utils import wavelet_numpy_to_torch, wavelet_torch_to_numpy
 
+# A faire:
+# - Ajouter plusieurs itérations sur chaque bloc avant de passer au suivant.
+# - Comparer : itérations, temps de calcul, PSNR
+
 class Projection():
 
     def __init__(self, image_size, wv_type, num_levels):
@@ -134,11 +138,10 @@ class BlockCoordinateDescent():
         grad_proj = self.proj.project(adj_wavelet, mode="details", level=0) # list of 3 detail coeffs (Wavelet domain)
 
         grad_proj_img = self.reconstruct_image(self.proj.project_adjoint(grad_proj, mode="details", level=0)) # project_adjoint adds zeros to other coeffs
-        dinv.utils.plot([grad_proj_img])
+        #dinv.utils.plot([grad_proj_img])
 
-        #dinv.utils.plot(grad_proj[0])
-        print("Coherence shape :", grad_proj.shape)
-        print("Coherence norm :", torch.norm(grad_proj_img))
+        #print("Coherence shape :", grad_proj.shape)
+        #print("Coherence norm :", torch.norm(grad_proj_img))
 
         for level, mode in updated_blocks:
             self.n_iter_tot += 1
@@ -249,7 +252,7 @@ if __name__ == "__main__":
     reg_weight = 1e-2
 
     # Parameters
-    n_iter = 100
+    n_iter = 1000
     Anorm2 = physics.compute_norm(x_true).item()
     stepsize = 0.1/Anorm2
     update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
@@ -285,7 +288,11 @@ if __name__ == "__main__":
 
     x0 = y.clone()
 
-    x_recon, loss, times = bcd.run(y, x0, x_true=x_true, n_iter=n_iter, reg_weight=reg_weight, update_mode=update_mode, metrics=True)
+    print("Running BCD cond...")
+    x_recon_cond, loss_cond, times_cond = bcd.run(y, x0, x_true=x_true, n_iter=n_iter, reg_weight=reg_weight, update_mode='MLFBcond', metrics=True)
+    print("Running BCD MLFB...")
+    x_recon_mlfb, loss_mlfb, times_mlfb = bcd.run(y, x0, x_true=x_true, n_iter=n_iter, reg_weight=reg_weight, update_mode='MLFB', metrics=True)
+    print("Running FB...")
     x_recon_fb, loss_fb, times_fb = bcd.FB(y, num_iterations=n_iter, reg_weight=reg_weight, metrics=True)
 
     # To have roughly the same number of iterations for FB and BCD
@@ -294,12 +301,13 @@ if __name__ == "__main__":
     print(f"Total number of iterations BCD: {n_iter_tot_bcd}")
     loss =  np.array(loss).repeat(int(n_iter_tot_bcd/n_iter))'''
 
-    psnrs = [PSNR(y, x_true).item(), PSNR(x_recon_fb, x_true).item(), PSNR(x_recon, x_true).item()]
+    psnrs = [PSNR(y, x_true).item(), PSNR(x_recon_fb, x_true).item(), PSNR(x_recon_mlfb, x_true).item(), PSNR(x_recon_cond, x_true).item()]
     psnrs = [f"{p:.2f}" for p in psnrs]
 
     # Plot loss vs iterationns
     plt.figure()
-    plt.plot(loss, label=f'BCD {update_mode}')
+    plt.plot(loss_cond, label=f'BCD cond')
+    plt.plot(loss_mlfb, label=f'BCD MLFB')
     plt.plot(loss_fb, label='FB')
     plt.xlabel('Iteration')
     plt.ylabel('Loss')
@@ -310,7 +318,8 @@ if __name__ == "__main__":
 
     # Plot loss vs time
     plt.figure()
-    plt.plot(times, loss, label=f'BCD {update_mode}')
+    plt.plot(times_cond, loss_cond, label='BCD cond')
+    plt.plot(times_mlfb, loss_mlfb, label='BCD MLFB')
     plt.plot(times_fb, loss_fb, label='FB')
     plt.xlabel('CPU time (s)')
     plt.ylabel('Loss')
@@ -319,4 +328,4 @@ if __name__ == "__main__":
     plt.savefig(os.path.join(exp_dir, "loss_time.pdf"))
     plt.show()
 
-    dinv.utils.plot([x_true, y, x_recon_fb, x_recon], titles=['Original', f'Observation \nPSNR: {psnrs[0]}', f'Reconstructed (FB) \nPSNR: {psnrs[1]}', f'Reconstructed (BCD) \nPSNR: {psnrs[2]}'], cmap='gray', save_fn=os.path.join(exp_dir, "reconstructions.pdf"))
+    dinv.utils.plot([x_true, y, x_recon_fb, x_recon_mlfb, x_recon_cond], titles=['Original', f'Observation \nPSNR: {psnrs[0]}', f'Reconstructed (FB) \nPSNR: {psnrs[1]}', f'Reconstructed (BCD MLFB) \nPSNR: {psnrs[2]}', f'Reconstructed (BCD cond) \nPSNR: {psnrs[3]}'], cmap='gray', save_fn=os.path.join(exp_dir, "reconstructions.pdf"))
