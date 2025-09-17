@@ -19,13 +19,10 @@ x_true = dinv.utils.load_example("butterfly.png", device=device)
 
 #%%------ MODEL -----%%
 # Physics
-blur_variance = (2, 2)
-filter_0 = dinv.physics.blur.gaussian_blur(sigma=blur_variance, angle=0.0)
-physics = dinv.physics.Blur(filter_0, device=device, padding="reflect")
-seed = torch.manual_seed(0)  # Random seed for reproducibility
-
 sigma = 0.01
-physics.noise_model = dinv.physics.GaussianNoise(sigma=sigma)
+noise_model = dinv.physics.GaussianNoise(sigma=sigma)
+physics = dinv.physics.Inpainting(tensor_size=x_true.shape[1:], mask=0.5, device=device, noise_model=noise_model)
+seed = torch.manual_seed(0)  # Random seed for reproducibility
 
 # Observation
 y = physics(x_true)
@@ -56,6 +53,7 @@ update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
 # Plug and Play denoiser
 denoiser_0 = dinv.models.DRUNet(in_channels=3, out_channels=3, device=device, pretrained="download")
 denoiser = dinv.models.EquivariantDenoiser(denoiser_0, random=True)
+prior_pnp = dinv.optim.prior.PnP(denoiser=denoiser)
 
 if prior_type == "L1":
     prior = dinv.optim.L1Prior()
@@ -85,6 +83,27 @@ args_multilevel = ParametersMultilevel(
     device=device,
 )
 
+args_multilevel.info_transfer = 'sinc'
+
+# Initialize multilevel physics
+coarse_physics = {f'level{J}': physics}
+data = physics.mask.data
+for i in range(J-1, 0, -1):
+    coarse_data = args_multilevel.information_transfer.to_coarse(data, data.shape)
+    coarse_physics[f'level{i}'] = dinv.physics.Inpainting(
+        img_size=coarse_data.shape[-2:], mask=coarse_data, device=device
+    )
+args_multilevel.coarse_physics = coarse_physics
+
+# Initialize multilevel observations
+observations = {f'level{J}': y}
+current_obs = y.clone()
+for i in range(J-1, 0, -1):
+    coarse_obs = args_multilevel.information_transfer.to_coarse(current_obs, current_obs.shape[-3:])
+    observations[f'level{i}'] = coarse_obs
+    current_obs = coarse_obs
+args_multilevel.observations = observations
+
 #%%----- Experiment directory setup to save parameters and figures -----%%
 if platform.system() == "Darwin":  # macOS
     EXPERIMENTS_ROOT = "/Users/edgardesainte-mareville/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/compare_methods"
@@ -98,7 +117,7 @@ os.makedirs(exp_dir, exist_ok=True)
 
 params = {
     "image": "butterfly.png",
-    "physics": f'Blur (variance {blur_variance}) + Gaussian noise (sigma={sigma})',
+    "physics": f'Inpainting (mask: 50%) + Gaussian noise (sigma={sigma})',
     "prior": prior_type,
     "sigma": sigma,
     "reg_weight": reg_weight,
@@ -202,12 +221,44 @@ def run_PnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pr
 
     return xk, loss, psnr, times
 
-def run_MLPnP(params):
-    recon = None
-    loss = None
-    psnr = None
-    times = None
-    return recon, loss, psnr, times
+def run_MLPnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params, denoiser=denoiser):
+    with torch.no_grad():
+        print("initialize ML PnP ...")
+        init = x0.clone()
+        levels = params['J']
+        regularization = params['reg_weight']
+        max_ML_steps = params['multilevel_iter']
+        step_size = params['stepsize']
+        if x_true is not None:
+            PSNR_init = PSNR(x0, init).item()
+
+        args_multilevel.param_coarse_iter = 5
+        ml_init = ml_init_pnp(init, levels, levels - 1, args_multilevel, regularization, denoiser, device)
+        PSNR_ML_init = PSNR(x0, ml_init).item()
+
+        print("solver is running ...")
+        args_multilevel.param_coarse_iter = 3
+
+        if x_true is not None:
+            psnr_sequence = [PSNR_init, PSNR_ML_init]
+        xk = ml_init
+        for k in range(20):
+            xk_prev = xk.clone()
+            if k < max_ML_steps:
+                cst_grad = None  # coherence not required on finest level
+                uk = MultiLevel(xk_prev, levels, levels-1, args_multilevel, regularization, cst_grad, device)
+            else:
+                uk = xk_prev
+            xk = uk - step_size*data_fidelity.grad(uk, y, physics)
+            xk = denoiser(xk, sigma=regularization)
+            if x_true is not None:
+                psnr_sequence.append(PSNR(x_true, xk).item())
+            if k % 10 == 0:
+                print(f"psnr ML[{k}]: {psnr_sequence[-1]}")
+        print("done.")
+
+    x_IMLPNP = xk
+    PSNR_out = psnr_sequence[-1]
 
 def run_MLFBcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
     recon = None
@@ -228,12 +279,12 @@ x0 = y.clone()
 
 methods = {
     "FB": run_FB,
-    "MLFB": run_MLFB,
-    "BCD": run_BCD,
+    #"MLFB": run_MLFB,
+    #"BCD": run_BCD,
     "PnP": run_PnP,
-    #"MLPnP": run_MLPnP,
+    "MLPnP": run_MLPnP,
     #"MLFBcond": run_MLFBcond,
-    "BCDcond": run_BCDcond
+    #"BCDcond": run_BCDcond
 }
 
 results = {}

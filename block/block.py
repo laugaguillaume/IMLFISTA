@@ -9,6 +9,12 @@ import os
 import json
 from datetime import datetime
 import platform
+import seaborn as sns
+
+# Plot settings
+sns.set_theme()
+sns.color_palette("colorblind")
+colors = sns.color_palette("colorblind")
 
 PSNR = dinv.metric.PSNR()
 
@@ -17,6 +23,15 @@ from block.utils import wavelet_numpy_to_torch, wavelet_torch_to_numpy
 # A faire:
 # - Ajouter plusieurs itérations sur chaque bloc avant de passer au suivant.
 # - Comparer : itérations, temps de calcul, PSNR
+# - Implémenter clair tous les algos, les comparer, identifier limitations
+# Guillaume, blocs avec différents epsilon, celui de paulo (aj, dj, dj-1, ...) (sans le lambda qui dépend de a)
+# Bien tracer la fonction objectif à chaque VRAIE itérations
+# Guillaume
+# aj, aj dj, aj dj dj-1
+# aj, dj, dj-1 (Paulo par blocs)
+# GD à toutes échelles + D_sigma
+# GD coarse + D_sigma
+# Paramètre : nombre de cycles, mettre un point rouge à chaque changement de cycle !
 
 class Projection():
 
@@ -64,8 +79,10 @@ class UpdateList():
             return self.create_update_list_FB()
         elif type == 'MLFBcond':
             return self.create_update_list_MLFBcond()
+        elif type == 'cyclic':
+            return self.create_update_list_cyclic()
         else:
-            raise ValueError("Invalid type. Choose 'MLFB', 'FB' or 'MLFBcond'.")
+            raise ValueError("Invalid type. Choose 'MLFB', 'FB', 'MLFBcond' or 'cyclic'.")
 
     def create_update_list_MLFB(self):
         update_list = [[(0, 'approx')]]
@@ -90,6 +107,12 @@ class UpdateList():
             update_list.append([(i, 'details')])
         return update_list
 
+    def create_update_list_cyclic(self):
+        update_list = [[(0, 'approx')]]
+        for i in range(self.max_levels):
+            update_list.append([(i, 'details')])
+        return update_list
+
 class BlockCoordinateDescent():
     def __init__(self, img_size, wv_type, physics, data_fidelity, prior, max_levels, stepsize=1e-3):
         self.img_size = img_size
@@ -98,11 +121,13 @@ class BlockCoordinateDescent():
         self.data_fidelity = data_fidelity
         self.prior = prior
         self.max_levels = max_levels
+
         self.stepsize = stepsize
+        self.reg_weight = None
+        self.y = None
 
+        self.wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device='cpu')
         self.proj = Projection(self.img_size, self.wv_type, self.max_levels)
-
-        self.n_iter_tot = 0
 
     def reconstruct_image(self, coeffs):
         """Reconstruct image from wavelet coefficients"""
@@ -115,7 +140,15 @@ class BlockCoordinateDescent():
         coeffs = pywt.wavedec2(x.cpu().numpy(), self.wv_type, level=self.max_levels)
         return wavelet_numpy_to_torch(coeffs)
 
-    def update_blocks(self, x_wavelet, y, updated_blocks, reg_weight):
+    def compute_metrics(self, x_wavelet, x_img=None):
+        if x_img is None:
+            x_img = self.reconstruct_image(x_wavelet)
+        crit = self.data_fidelity.fn(x_img, self.y, self.physics).item() + reg_weight * self.wavelet_prior.fn(x_img).item()
+        self.losses.append(crit)
+        self.times.append(time.process_time())
+        self.psnrs.append(PSNR(x_img, self.x_true).item())
+
+    def update_blocks(self, x_wavelet, y, n_iter_coarse, updated_blocks, reg_weight):
         # Update list is a list of tuples (level, mode) where mode is 'approx' or 'details'
 
         x_img = self.reconstruct_image(x_wavelet)
@@ -127,7 +160,7 @@ class BlockCoordinateDescent():
         approx = x_wavelet[0]
         APiVTa = self.physics.A(self.reconstruct_image(self.proj.project_adjoint(approx, mode="approx", level=0)))
 
-        PiVTPiVy = self.proj.project_adjoint(  # - Π_V^* Π_V y
+        PiVTPiVy = self.proj.project_adjoint(  # - Pi_V^* Π_V y
                     self.proj.project(y_wavelet, mode="details", level=0),
                     mode="details", level=0
                 )
@@ -144,36 +177,50 @@ class BlockCoordinateDescent():
         #print("Coherence norm :", torch.norm(grad_proj_img))
 
         for level, mode in updated_blocks:
-            self.n_iter_tot += 1
             if mode == 'approx':
                 coeff = self.proj.project(x_wavelet, mode, level=0)
+                for i in range(n_iter_coarse):
+                    coeff = coeff - self.stepsize * self.proj.project(grad_wavelet, mode, level=0)
+                    coeff = self.prior.prox(coeff, gamma=reg_weight*self.stepsize)
+                    x_wavelet[0] = coeff
 
-                coeff = coeff - self.stepsize * self.proj.project(grad_wavelet, mode, level=0)
-                coeff = self.prior.prox(coeff, gamma=reg_weight*self.stepsize)
-                x_wavelet[0] = coeff
+                    self.current_iter += 1
+                    self.compute_metrics(x_wavelet)
 
             elif mode == 'details':
                 coeff = self.proj.project(x_wavelet, mode, level=level)
 
-                for c in range(3):
-                    coeff[c] = coeff[c] - self.stepsize * self.proj.project(grad_wavelet, mode, level=level)[c]
-                    coeff[c] = self.prior.prox(coeff[c], gamma=reg_weight * self.stepsize)
+                for i in range(n_iter_coarse):
+                    for c in range(3):
+                        coeff[c] = coeff[c] - self.stepsize * self.proj.project(grad_wavelet, mode, level=level)[c]
+                        coeff[c] = self.prior.prox(coeff[c], gamma=reg_weight * self.stepsize)
+                        x_wavelet[level + 1][c] = coeff[c]
 
-                    x_wavelet[level + 1][c] = coeff[c]
+                    self.current_iter += 1
+                    self.compute_metrics(x_wavelet)
 
             else:
                 raise ValueError("Invalid mode. Choose 'details' or 'approx'.")
 
         return x_wavelet
 
-    def run(self, y, x0, x_true, n_iter, reg_weight, update_mode='MLFB', metrics=False):
+    def run(self, y, x0, x_true, n_iter, n_iter_coarse, reg_weight, update_mode='MLFB', metrics=False):
+        self.reg_weight = reg_weight
+        self.y = y
+        self.x_true = x_true
+
+        self.losses = []
+        self.times = []
+        self.psnrs = []
+        self.current_iter = 0
+        self.cycles = []
+
         # Wavelet prior to compute the objective function values
         wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device='cpu')
         xk_wavelet = self.img_to_wavelet(x0)
 
         # Update list
         update_list = UpdateList(self.max_levels).get_list(type=update_mode)
-        #print(update_list)
 
         if metrics:
             loss, times = [], []
@@ -184,25 +231,29 @@ class BlockCoordinateDescent():
                 x_recon = self.reconstruct_image(xk_wavelet)
                 crit = self.data_fidelity.fn(x_recon, y, self.physics).item() + reg_weight * wavelet_prior.fn(x_recon).item()
                 print(f"Iteration {it}/{n_iter}, Crit: {crit:.2f}")
-                loss.append(crit)
-                times.append(time.process_time() - start)
 
             # Update detail coefficients from coarse to fine
             for updated_blocks in update_list:
-                xk_wavelet = self.update_blocks(xk_wavelet, y, updated_blocks=updated_blocks, reg_weight=reg_weight)
+                xk_wavelet = self.update_blocks(xk_wavelet, y, n_iter_coarse=n_iter_coarse, updated_blocks=updated_blocks, reg_weight=reg_weight)
+            self.cycles.append(self.current_iter)
 
         x_recon = self.reconstruct_image(xk_wavelet)
+
         if metrics:
-            return x_recon, loss, times
+            self.times = [t - start for t in self.times]  # Start at 0
+            return x_recon, self.losses, self.times, self.cycles, self.psnrs
         return x_recon
 
 
     def FB(self, y, num_iterations, reg_weight, metrics=False):
         # Wavelet prior to compute the objective function values AND to use in the proximal step
         wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device='cpu')
+        # wavelet_prior = dinv.optim.TVPrior(n_it_max=50)
+        # The wavelet prior seems to introduce a decrease in the PSNR, that does not happen with TV prior...
+
         xk = copy.deepcopy(y)
         if metrics:
-            loss, times = [], []
+            loss, times, psnrs = [], [], []
             start = time.process_time()
 
         for it in range(num_iterations):
@@ -211,11 +262,12 @@ class BlockCoordinateDescent():
                 print(f"Iteration {it}/{num_iterations}, Crit: {crit:.2f}")
                 loss.append(crit)
                 times.append(time.process_time() - start)
+                psnrs.append(PSNR(xk, self.x_true).item())
             xk = xk - self.stepsize * self.data_fidelity.grad(xk, y, self.physics)
             xk = wavelet_prior.prox(xk, gamma=reg_weight*self.stepsize)
 
         if metrics:
-            return xk, loss, times
+            return xk, loss, times, psnrs
         return xk
 
 
@@ -249,10 +301,10 @@ if __name__ == "__main__":
     data_fidelity = dinv.optim.L2()
     #prior = dinv.optim.TVPrior(n_it_max=50)
     prior = dinv.optim.L1Prior()
-    reg_weight = 1e-2
+    reg_weight = 1e-4
 
     # Parameters
-    n_iter = 1000
+    n_iter = 10
     Anorm2 = physics.compute_norm(x_true).item()
     stepsize = 0.1/Anorm2
     update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
@@ -289,32 +341,39 @@ if __name__ == "__main__":
     x0 = y.clone()
 
     print("Running BCD cond...")
-    x_recon_cond, loss_cond, times_cond = bcd.run(y, x0, x_true=x_true, n_iter=n_iter, reg_weight=reg_weight, update_mode='MLFBcond', metrics=True)
-    print("Running BCD MLFB...")
-    x_recon_mlfb, loss_mlfb, times_mlfb = bcd.run(y, x0, x_true=x_true, n_iter=n_iter, reg_weight=reg_weight, update_mode='MLFB', metrics=True)
-    print("Running FB...")
-    x_recon_fb, loss_fb, times_fb = bcd.FB(y, num_iterations=n_iter, reg_weight=reg_weight, metrics=True)
+    x_recon_cond, loss_cond, times_cond, cycles_cond, psnr_cond = bcd.run(y, x0, x_true=x_true, n_iter=n_iter, n_iter_coarse=10, reg_weight=reg_weight, update_mode='MLFBcond', metrics=True)
 
-    # To have roughly the same number of iterations for FB and BCD
-    '''n_iter_tot_bcd = int(bcd.n_iter_tot/4)
-    x_recon_fb, loss_fb = bcd.FB(y, num_iterations=n_iter_tot_bcd, reg_weight=reg_weight, metrics=True)
-    print(f"Total number of iterations BCD: {n_iter_tot_bcd}")
-    loss =  np.array(loss).repeat(int(n_iter_tot_bcd/n_iter))'''
+    print("Running BCD MLFB...")
+    x_recon_mlfb, loss_mlfb, times_mlfb, cycles_mlfb, psnr_mlfb = bcd.run(y, x0, x_true=x_true, n_iter=n_iter, n_iter_coarse=10, reg_weight=reg_weight, update_mode='MLFB', metrics=True)
+
+    print("Running FB...")
+    n_iter_fb = min(len(loss_cond), len(loss_mlfb))
+    x_recon_fb, loss_fb, times_fb, psnr_fb = bcd.FB(y, num_iterations=n_iter_fb, reg_weight=reg_weight, metrics=True)
 
     psnrs = [PSNR(y, x_true).item(), PSNR(x_recon_fb, x_true).item(), PSNR(x_recon_mlfb, x_true).item(), PSNR(x_recon_cond, x_true).item()]
     psnrs = [f"{p:.2f}" for p in psnrs]
 
-    # Plot loss vs iterationns
-    plt.figure()
-    plt.plot(loss_cond, label=f'BCD cond')
-    plt.plot(loss_mlfb, label=f'BCD MLFB')
-    plt.plot(loss_fb, label='FB')
-    plt.xlabel('Iteration')
-    plt.ylabel('Loss')
-    plt.title('Loss over Iterations')
-    plt.legend()
-    plt.savefig(os.path.join(exp_dir, "loss_iterations.pdf"))
+    # Plot loss vs iterations
+    plt.figure(figsize=(7, 5))
+
+    plt.plot(loss_cond, color=colors[0], label="BCD cond", linewidth=2)
+    plt.plot(loss_mlfb, color=colors[1], label="BCD MLFB", linewidth=2)
+    plt.plot(loss_fb,   color=colors[2], label="FB", linewidth=2)
+
+    plt.scatter(cycles_cond, [loss_cond[i-1] for i in cycles_cond],
+                color=colors[0], marker="o", s=80, label="cycles_cond")
+
+    plt.scatter(cycles_mlfb, [loss_mlfb[i-1] for i in cycles_mlfb],
+                color=colors[1], marker="x", s=80, label="cycles_mlfb")
+
+    plt.xlabel("Iteration")
+    plt.ylabel("Loss")
+    plt.title(f"Loss over Iterations\n Number of cycles: {len(cycles_cond)}")
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(exp_dir, "loss_iter.pdf"))
     plt.show()
+
 
     # Plot loss vs time
     plt.figure()
@@ -326,6 +385,41 @@ if __name__ == "__main__":
     plt.title('Loss over CPU Time')
     plt.legend()
     plt.savefig(os.path.join(exp_dir, "loss_time.pdf"))
+    plt.show()
+
+
+    # Plot PSNR vs iterations
+    plt.figure(figsize=(7, 5))
+
+    plt.plot(psnr_cond, color=colors[0], label="BCD cond", linewidth=2)
+    plt.plot(psnr_mlfb, color=colors[1], label="BCD MLFB", linewidth=2)
+    plt.plot(psnr_fb,   color=colors[2], label="FB", linewidth=2)
+
+    plt.scatter(cycles_cond, [psnr_cond[i-1] for i in cycles_cond],
+                color=colors[0], marker="o", s=80, label="cycles_cond")
+
+    plt.scatter(cycles_mlfb, [psnr_mlfb[i-1] for i in cycles_mlfb],
+                color=colors[1], marker="x", s=80, label="cycles_mlfb")
+
+    plt.xlabel("Iteration")
+    plt.ylabel("PSNR")
+    plt.title(f"PSNR over Iterations\n Number of cycles: {len(cycles_cond)}")
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(exp_dir, "psnr_iter.pdf"))
+    plt.show()
+
+
+    # Plot PSNR vs time
+    plt.figure()
+    plt.plot(times_cond, psnr_cond, label='BCD cond')
+    plt.plot(times_mlfb, psnr_mlfb, label='BCD MLFB')
+    plt.plot(times_fb, psnr_fb, label='FB')
+    plt.xlabel('CPU time (s)')
+    plt.ylabel('PSNR')
+    plt.title('PSNR over CPU Time')
+    plt.legend()
+    plt.savefig(os.path.join(exp_dir, "psnr_time.pdf"))
     plt.show()
 
     dinv.utils.plot([x_true, y, x_recon_fb, x_recon_mlfb, x_recon_cond], titles=['Original', f'Observation \nPSNR: {psnrs[0]}', f'Reconstructed (FB) \nPSNR: {psnrs[1]}', f'Reconstructed (BCD MLFB) \nPSNR: {psnrs[2]}', f'Reconstructed (BCD cond) \nPSNR: {psnrs[3]}'], cmap='gray', save_fn=os.path.join(exp_dir, "reconstructions.pdf"))
