@@ -11,7 +11,7 @@ import seaborn as sns
 from pathlib import Path
 
 from block.block import BlockCoordinateDescent
-from multilevel.multilevel import ParametersMultilevel, MultiLevel, MultiLevelWavelets
+from multilevel.multilevel import ParametersMultilevel, MultiLevel, MultiLevelWavelets, WaveletDenoiserConditional
 from multilevel.multilevel_initialization import ml_init_pnp
 
 # Plot settings
@@ -40,13 +40,14 @@ prior_type = "TV"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 100
-reg_weight = 1e-2
+n_iter = 10
+reg_weight = 1e-4
 Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.1/Anorm2
 
 J = 3
-wv_type = 'daubechies8'
+filter = 'daubechies8'
+wv_type = 'db8'
 
 # For multilevel algorithms
 multilevel_iter = 5 # Number of multilevel iterations at the fine level
@@ -61,6 +62,9 @@ update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
 denoiser_0 = dinv.models.DRUNet(in_channels=3, out_channels=3, device=device, pretrained="download")
 denoiser_pnp = dinv.models.EquivariantDenoiser(denoiser_0, random=True)
 prior_pnp = dinv.optim.prior.PnP(denoiser=denoiser_pnp)
+
+# Conditional Denoiser
+denoiser_cond = WaveletDenoiserConditional(level=J, wv=wv_type, device=device, non_linearity="soft")
 
 if prior_type == "L1":
     prior = dinv.optim.L1Prior()
@@ -93,7 +97,8 @@ args_multilevel = ParametersMultilevel(
     device=device,
 )
 
-args_multilevel.info_transfer = 'daubechies8'
+args_multilevel.info_transfer = filter
+wv_type = args_multilevel.information_transfer.wavelet_type
 
 # Initialize coarse physics
 coarse_physics = {f'level{J}': physics}
@@ -147,6 +152,7 @@ params = {
     "reg_weight": reg_weight,
     "n_iter": n_iter,
     "multilevel_iter": multilevel_iter,
+    "n_coarse_steps": n_coarse_steps,
     "stepsize": stepsize,
     "J": J,
     "wavelet": wv_type,
@@ -160,7 +166,7 @@ with open(params_path, "w") as f:
 #%%%--- Reconstruction %%%---
 
 def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
-    loss, psnr, times = [], [], []
+    loss, psnr, times = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], []
     start = time.process_time()
 
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
@@ -173,14 +179,14 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
         if x_true is not None:
             current_psnr = PSNR(xk, x_true).item()
             psnr.append(current_psnr)
-        current_loss =  data_fidelity.fn(xk, y, physics).item() + reg_weight * prior.fn(xk).item()
+        current_loss =  data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
         loss.append(current_loss)
         times.append(time.process_time() - start)
 
     return xk, loss, psnr, times
 
 def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params, args_multilevel=args_multilevel):
-    loss, psnr, times = [], [], []
+    loss, psnr, times = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], []
     xk = x0.clone()
     levels = params['J']
     param_regularization = params['reg_weight']
@@ -223,14 +229,14 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
     recon = xk.clone()
     return recon, loss, psnr, times
 
-def run_BCD(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
+def run_BCD_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
     xk = x0.clone()
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
-    recon, loss, times = bcd.run(y, xk, x_true=x_true, n_iter=params['n_iter'], reg_weight=params['reg_weight'], update_mode='MLFB', metrics=True)
+    recon, loss, times = bcd.run(y, xk, x_true=x_true, n_iter=params['n_iter'], n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFB', metrics=True)
     return recon, loss, psnr, times
 
 def run_PnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params, denoiser=denoiser):
-    loss, psnr, times = None, [], []
+    loss, psnr, times = None, [PSNR(x0, x_true).item()], []
     start = time.process_time()
 
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
@@ -248,7 +254,7 @@ def run_PnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pr
     return xk, loss, psnr, times
 
 def run_MLPnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params, denoiser=denoiser):
-    loss, psnr, times = [], [], []
+    loss, psnr, times = None, [PSNR(x0, x_true).item()], []
 
     with torch.no_grad():
         print("initialize ML PnP ...")
@@ -309,11 +315,44 @@ def run_MLPnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, 
     recon = xk.clone()
     return recon, loss, psnr, times
 
-def run_MLFBcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
-    recon = None
-    loss = None
-    psnr = None
-    times = None
+def run_MLFBcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params, args_multilevel=args_multilevel):
+    loss, psnr, times = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], []
+    xk = x0.clone()
+    levels = params['J']
+    param_regularization = params['reg_weight']
+    param_gamma = params['stepsize']
+
+    start = time.process_time()
+
+    with torch.no_grad():
+        for k in range(params['n_iter']):
+
+            if k < params['multilevel_iter']:
+                xk = MultiLevelWavelets(
+                    xk,
+                    levels,
+                    levels - 1,
+                    args_multilevel,
+                    param_regularization,
+                    cst_grad,
+                    device,
+                )
+
+            # Gradient step
+            xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
+            # Proximal step
+            xk = denoiser_cond(xk, gamma=params['stepsize'] * params['reg_weight'])
+
+            # Compute loss and PSNR
+            current_loss = data_fidelity(xk, y, physics) + param_regularization * prior.fn(xk)
+            loss.append(current_loss.item())
+
+            current_psnr = PSNR(xk, x_true).item()
+            psnr.append(current_psnr)
+
+            times.append(time.process_time() - start)
+
+    recon = xk.clone()
     return recon, loss, psnr, times
 
 def run_BCDcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
@@ -329,11 +368,11 @@ x0 = y.clone()
 methods = {
     "FB": run_FB,
     "MLFB": run_MLFB,
-    #"BCD": run_BCD,
+    "BCD": run_BCD_MLFB,
     "PnP": run_PnP,
     "MLPnP": run_MLPnP,
     #"MLFBcond": run_MLFBcond,
-    #"BCDcond": run_BCDcond
+    "BCDcond": run_BCDcond
 }
 
 results = {}
@@ -363,56 +402,62 @@ for method_name, method_func in methods.items():
 
 #%%%--- Plotting results %%%---
 
-# PSNR vs Iterations
-plt.figure(figsize=(10, 6))
-for method_name, result in results.items():
-    if result['psnr']:
-        plt.plot(result['psnr'], label=method_name)
-plt.axvline(x=multilevel_iter, color='red', linestyle='--', label=f"End of Multilevel iterations (total : {multilevel_iter})")
-plt.xlabel('Iteration')
-plt.ylabel('PSNR (dB)')
-plt.title('PSNR vs Iteration for Different Methods')
-plt.legend()
-plt.grid()
-plt.savefig(os.path.join(exp_dir, "psnr_iter_comparison.pdf"))
-plt.show()
+# Créer une figure avec 4 sous-graphiques côte à côte
+fig, axes = plt.subplots(1, 4, figsize=(28, 6))
 
-# Loss vs Iterations
-plt.figure(figsize=(10, 6))
+# Définir une palette de couleurs pour les différentes méthodes
+colors = plt.cm.Set1(np.linspace(0, 1, len(results)))
+method_colors = {method_name: colors[i] for i, method_name in enumerate(results.keys())}
+
+# Plot 1: Loss vs Iterations
 for method_name, result in results.items():
     if result['loss']:
-        plt.plot(result['loss'], label=method_name)
-plt.axvline(x=multilevel_iter, color='red', linestyle='--', label=f"End of Multilevel iterations (total : {multilevel_iter})")
-plt.xlabel('Iteration')
-plt.ylabel('Loss')
-plt.title('Loss vs Iteration for Different Methods')
-plt.legend()
-plt.grid()
-plt.savefig(os.path.join(exp_dir, "loss_iter_comparison.pdf"))
-plt.show()
+        axes[0].plot(result['loss'], color=method_colors[method_name],
+                    label=method_name, linewidth=2)
+axes[0].axvline(x=multilevel_iter, color='red', linestyle='--',
+               label=f"End of Multilevel iterations (total : {multilevel_iter})")
+axes[0].set_xlabel('Iteration')
+axes[0].set_ylabel('Loss')
+axes[0].set_title('Loss over Iterations')
+axes[0].legend(frameon=True)
+axes[0].grid(True)
 
-# PSNR vs Time
-plt.figure(figsize=(10, 6))
+# Plot 2: Loss vs Time
+for method_name, result in results.items():
+    if result['loss'] and result['times']:
+        axes[1].plot(result['times'], result['loss'], color=method_colors[method_name],
+                    label=method_name, linewidth=2)
+axes[1].set_xlabel('CPU time (s)')
+axes[1].set_ylabel('Loss')
+axes[1].set_title('Loss over CPU Time')
+axes[1].legend(frameon=True)
+axes[1].grid(True)
+
+# Plot 3: PSNR vs Iterations
 for method_name, result in results.items():
     if result['psnr']:
-        plt.plot(result['times'], result['psnr'], label=method_name)
-plt.xlabel('CPU time (s)')
-plt.ylabel('PSNR (dB)')
-plt.title('PSNR vs Time for Different Methods')
-plt.legend()
-plt.grid()
-plt.savefig(os.path.join(exp_dir, "psnr_time_comparison.pdf"))
-plt.show()
+        axes[2].plot(result['psnr'], color=method_colors[method_name],
+                    label=method_name, linewidth=2)
+axes[2].axvline(x=multilevel_iter, color='red', linestyle='--',
+               label=f"End of Multilevel iterations (total : {multilevel_iter})")
+axes[2].set_xlabel('Iteration')
+axes[2].set_ylabel('PSNR (dB)')
+axes[2].set_title('PSNR over Iterations')
+axes[2].legend(frameon=True)
+axes[2].grid(True)
 
-# Loss vs Time
-plt.figure(figsize=(10, 6))
+# Plot 4: PSNR vs Time
 for method_name, result in results.items():
-    if result['loss']:
-        plt.plot(result['times'], result['loss'], label=method_name)
-plt.xlabel('CPU time (s)')
-plt.ylabel('Loss')
-plt.title('Loss vs Time for Different Methods')
-plt.legend()
-plt.grid()
-plt.savefig(os.path.join(exp_dir, "loss_time_comparison.pdf"))
+    if result['psnr'] and result['times']:
+        axes[3].plot(result['times'], result['psnr'], color=method_colors[method_name],
+                    label=method_name, linewidth=2)
+axes[3].set_xlabel('CPU time (s)')
+axes[3].set_ylabel('PSNR (dB)')
+axes[3].set_title('PSNR over CPU Time')
+axes[3].legend(frameon=True)
+axes[3].grid(True)
+
+# Ajuster l'espacement et sauvegarder
+plt.tight_layout()
+plt.savefig(os.path.join(exp_dir, "all_plots_combined.pdf"), bbox_inches='tight')
 plt.show()

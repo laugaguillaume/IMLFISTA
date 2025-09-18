@@ -143,7 +143,7 @@ class BlockCoordinateDescent():
     def compute_metrics(self, x_wavelet, x_img=None):
         if x_img is None:
             x_img = self.reconstruct_image(x_wavelet)
-        crit = self.data_fidelity.fn(x_img, self.y, self.physics).item() + reg_weight * self.wavelet_prior.fn(x_img).item()
+        crit = self.data_fidelity.fn(x_img, self.y, self.physics).item() + self.reg_weight * self.wavelet_prior.fn(x_img).item()
         self.losses.append(crit)
         self.times.append(time.process_time())
         self.psnrs.append(PSNR(x_img, self.x_true).item())
@@ -284,9 +284,11 @@ if __name__ == "__main__":
     wv_type = 'haar'
 
     # Physics
-    filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
-    physics = dinv.physics.Blur(filter_0, device=device, padding="reflect")
-    #physics = dinv.physics.Inpainting(mask=0.7, img_size=x_true.shape[1:])
+    """filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
+    physics = dinv.physics.Blur(filter_0, device=device, padding="reflect")"""
+    sigma = 0.01
+    noise_model = dinv.physics.GaussianNoise(sigma=sigma)
+    physics = dinv.physics.Inpainting(tensor_size=x_true.shape[1:], mask=0.7, device=device, noise_model=noise_model)
     seed = torch.manual_seed(0)  # Random seed for reproducibility
 
     sigma = 0.01
@@ -304,9 +306,9 @@ if __name__ == "__main__":
     reg_weight = 1e-4
 
     # Parameters
-    n_iter = 10
+    n_iter = 100
     Anorm2 = physics.compute_norm(x_true).item()
-    stepsize = 0.1/Anorm2
+    stepsize = 0.2/Anorm2
     update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
     print(f"Stepsize: {stepsize}")
 
