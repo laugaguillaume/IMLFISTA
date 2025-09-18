@@ -352,7 +352,7 @@ if __name__ == "__main__":
 
     psnrs = [PSNR(y, x_true).item(), PSNR(x_recon_fb, x_true).item(), PSNR(x_recon_mlfb, x_true).item(), PSNR(x_recon_cond, x_true).item()]
     psnrs = [f"{p:.2f}" for p in psnrs]
-    
+
     # Créer une figure avec 4 sous-graphiques côte à côte
     fig, axes = plt.subplots(1, 4, figsize=(28, 6))
 

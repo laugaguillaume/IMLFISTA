@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import deepinv as dinv
 import time
 import seaborn as sns
+from pathlib import Path
 
 from block.block import BlockCoordinateDescent
 from multilevel.multilevel import ParametersMultilevel, MultiLevel, MultiLevelWavelets
@@ -96,14 +97,14 @@ args_multilevel.info_transfer = 'daubechies8'
 
 # Initialize coarse physics
 coarse_physics = {f'level{J}': physics}
-coarse_data = physics.mask.data 
+coarse_data = physics.mask.data
 
 for i in range(J-1, 0, -1):
     coarse_data = args_multilevel.information_transfer.to_coarse(coarse_data, coarse_data.shape)
     coarse_physics[f'level{i}'] = dinv.physics.Inpainting(
         tensor_size=coarse_data.shape[1:],
-        mask=coarse_data, 
-        device=physics.mask.device 
+        mask=coarse_data,
+        device=physics.mask.device
     )
 
 args_multilevel.coarse_physics = coarse_physics
@@ -113,7 +114,7 @@ observations = {f'level{J}': y}
 current_obs = y.clone()
 for i in range(J-1, 0, -1):
     current_obs = args_multilevel.information_transfer.to_coarse(
-        current_obs, 
+        current_obs,
         current_obs.shape[-3:]
     )
     observations[f'level{i}'] = current_obs
@@ -121,10 +122,17 @@ for i in range(J-1, 0, -1):
 args_multilevel.observations = observations
 
 #%%----- Experiment directory setup to save parameters and figures -----%%
-if platform.system() == "Darwin":  # macOS
-    EXPERIMENTS_ROOT = "/Users/edgardesainte-mareville/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/compare_methods"
-else:  # Linux ou autre
-    EXPERIMENTS_ROOT = "/home/edgar/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/compare_methods"
+cbp = True
+
+if not cbp:
+    if platform.system() == "Darwin":
+        EXPERIMENTS_ROOT = Path("/Users/edgardesainte-mareville/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/compare_methods")
+    else:
+        EXPERIMENTS_ROOT = Path("/home/edgar/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/compare_methods")
+else:
+    EXPERIMENTS_ROOT = Path(__file__).resolve().parent / "experiments_results/compare_methods"  # relatif au repo
+
+EXPERIMENTS_ROOT.mkdir(parents=True, exist_ok=True)
 
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
 exp_name = f"exp_{timestamp}_J{J}_mode{update_mode}_reg{reg_weight}_niter{n_iter}_sigma{sigma}"
@@ -177,12 +185,12 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
     levels = params['J']
     param_regularization = params['reg_weight']
     param_gamma = params['stepsize']
-    
+
     start = time.process_time()
-    
+
     with torch.no_grad():
         for k in range(params['n_iter']):
-            
+
             if k < params['multilevel_iter']:
                 xk = MultiLevel(
                     xk,
@@ -193,10 +201,10 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
                     cst_grad,
                     device,
                 )
-            
+
             # Gradient step
             xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
-            
+
             # Proximal step
             if isinstance(prior, dinv.optim.TVPrior):
                 xk = prior.prox(xk, gamma=param_gamma * param_regularization)
@@ -206,10 +214,10 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
             # Compute loss and PSNR
             current_loss = data_fidelity(xk, y, physics) + param_regularization * prior.fn(xk)
             loss.append(current_loss.item())
-            
+
             current_psnr = PSNR(xk, x_true).item()
             psnr.append(current_psnr)
-            
+
             times.append(time.process_time() - start)
 
     recon = xk.clone()
@@ -241,7 +249,7 @@ def run_PnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pr
 
 def run_MLPnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params, denoiser=denoiser):
     loss, psnr, times = [], [], []
-    
+
     with torch.no_grad():
         print("initialize ML PnP ...")
         init = x0.clone()
@@ -249,9 +257,9 @@ def run_MLPnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, 
         regularization = params['reg_weight']
         max_ML_steps = params['multilevel_iter']
         step_size = params['stepsize']
-        
+
         start = time.process_time()
-        
+
         # Initial PSNR
         if x_true is not None:
             PSNR_init = PSNR(init, x_true).item()
@@ -260,7 +268,7 @@ def run_MLPnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, 
         # ML initialization
         args_multilevel.param_coarse_iter = 5
         ml_init = ml_init_pnp(init, levels, levels - 1, args_multilevel, regularization, denoiser, device)
-        
+
         if x_true is not None:
             PSNR_ML_init = PSNR(ml_init, x_true).item()
             psnr.append(PSNR_ML_init)
@@ -269,33 +277,33 @@ def run_MLPnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, 
         args_multilevel.param_coarse_iter = 3
 
         xk = ml_init
-        
+
         # Main iteration loop
         for k in range(params['n_iter']):
             xk_prev = xk.clone()
-            
+
             if k < max_ML_steps:
                 cst_grad = None  # coherence not required on finest level
                 uk = MultiLevel(xk_prev, levels, levels-1, args_multilevel, regularization, cst_grad, device)
             else:
                 uk = xk_prev
-                
+
             xk = uk - step_size * data_fidelity.grad(uk, y, physics)
             xk = denoiser(xk, sigma=regularization)
-            
+
             # Compute metrics
             current_loss = data_fidelity(xk, y, physics) + regularization * prior.fn(xk)
             loss.append(current_loss.item())
-            
+
             if x_true is not None:
                 current_psnr = PSNR(xk, x_true).item()
                 psnr.append(current_psnr)
-            
+
             times.append(time.process_time() - start)
-            
+
             if k % 10 == 0:
                 print(f"psnr ML[{k}]: {psnr[-1] if x_true is not None else 'N/A'}")
-                
+
         print("done.")
 
     recon = xk.clone()
