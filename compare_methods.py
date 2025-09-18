@@ -7,10 +7,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 import deepinv as dinv
 import time
+import seaborn as sns
 
 from block.block import BlockCoordinateDescent
 from multilevel.multilevel import ParametersMultilevel, MultiLevel, MultiLevelWavelets
 from multilevel.multilevel_initialization import ml_init_pnp
+
+# Plot settings
+sns.set_theme()
+sns.color_palette("colorblind")
+colors = sns.color_palette("colorblind")
 
 PSNR = dinv.metric.PSNR()
 
@@ -33,7 +39,7 @@ prior_type = "TV"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 10
+n_iter = 100
 reg_weight = 1e-2
 Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.1/Anorm2
@@ -175,37 +181,21 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
     param_regularization = params['reg_weight']
     param_gamma = params['stepsize']
     
-    # Debug : afficher les shapes
-    print(f"Debug: x0.shape = {x0.shape}")
-    print(f"Debug: y.shape = {y.shape}")
-    print(f"Debug: x_true.shape = {x_true.shape}")
-    print(f"Debug: levels = {levels}")
-    print(f"Debug: args_multilevel.info_transfer = {args_multilevel.info_transfer}")
-    print(f"Debug: args_multilevel.step_size = {args_multilevel.step_size} (type: {type(args_multilevel.step_size)})")
-    
     start = time.process_time()
     
     with torch.no_grad():
         for k in range(params['n_iter']):
-            print(f"Debug: Iteration {k}, xk.shape = {xk.shape}")
             
             if k < params['multilevel_iter']:
-                print(f"Debug: Calling MultiLevel at iteration {k}")
-                try:
-                    xk = MultiLevel(
-                        xk,
-                        levels,
-                        levels - 1,
-                        args_multilevel,
-                        param_regularization,
-                        cst_grad,
-                        device,
-                    )
-                    print(f"Debug: MultiLevel succeeded, xk.shape = {xk.shape}")
-                except Exception as e:
-                    print(f"Debug: MultiLevel failed at iteration {k} with error: {e}")
-                    print(f"Debug: xk.shape before MultiLevel = {xk.shape}")
-                    raise e
+                xk = MultiLevel(
+                    xk,
+                    levels,
+                    levels - 1,
+                    args_multilevel,
+                    param_regularization,
+                    cst_grad,
+                    device,
+                )
             
             # Gradient step
             xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
@@ -216,7 +206,7 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
             else:
                 xk = prior.prox(xk, gamma=[param_gamma * param_regularization])
 
-            # Calcul de la loss et PSNR
+            # Compute loss and PSNR
             current_loss = data_fidelity(xk, y, physics) + param_regularization * prior.fn(xk)
             loss.append(current_loss.item())
             
@@ -224,9 +214,6 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
             psnr.append(current_psnr)
             
             times.append(time.process_time() - start)
-
-            if k % 5 == 0:  # Plus fréquent pour debug
-                print(f"Debug: Iteration {k} completed - loss: {loss[k]:.6f}, psnr: {psnr[k]:.2f}")
 
     recon = xk.clone()
     return recon, loss, psnr, times
@@ -256,6 +243,8 @@ def run_PnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pr
     return xk, loss, psnr, times
 
 def run_MLPnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params, denoiser=denoiser):
+    loss, psnr, times = [], [], []
+    
     with torch.no_grad():
         print("initialize ML PnP ...")
         init = x0.clone()
@@ -263,36 +252,57 @@ def run_MLPnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, 
         regularization = params['reg_weight']
         max_ML_steps = params['multilevel_iter']
         step_size = params['stepsize']
+        
+        start = time.process_time()
+        
+        # Initial PSNR
         if x_true is not None:
-            PSNR_init = PSNR(x0, init).item()
+            PSNR_init = PSNR(init, x_true).item()
+            psnr.append(PSNR_init)
 
+        # ML initialization
         args_multilevel.param_coarse_iter = 5
         ml_init = ml_init_pnp(init, levels, levels - 1, args_multilevel, regularization, denoiser, device)
-        PSNR_ML_init = PSNR(x0, ml_init).item()
+        
+        if x_true is not None:
+            PSNR_ML_init = PSNR(ml_init, x_true).item()
+            psnr.append(PSNR_ML_init)
 
         print("solver is running ...")
         args_multilevel.param_coarse_iter = 3
 
-        if x_true is not None:
-            psnr_sequence = [PSNR_init, PSNR_ML_init]
         xk = ml_init
-        for k in range(20):
+        
+        # Main iteration loop
+        for k in range(params['n_iter']):
             xk_prev = xk.clone()
+            
             if k < max_ML_steps:
                 cst_grad = None  # coherence not required on finest level
                 uk = MultiLevel(xk_prev, levels, levels-1, args_multilevel, regularization, cst_grad, device)
             else:
                 uk = xk_prev
-            xk = uk - step_size*data_fidelity.grad(uk, y, physics)
+                
+            xk = uk - step_size * data_fidelity.grad(uk, y, physics)
             xk = denoiser(xk, sigma=regularization)
+            
+            # Compute metrics
+            current_loss = data_fidelity(xk, y, physics) + regularization * prior.fn(xk)
+            loss.append(current_loss.item())
+            
             if x_true is not None:
-                psnr_sequence.append(PSNR(x_true, xk).item())
+                current_psnr = PSNR(xk, x_true).item()
+                psnr.append(current_psnr)
+            
+            times.append(time.process_time() - start)
+            
             if k % 10 == 0:
-                print(f"psnr ML[{k}]: {psnr_sequence[-1]}")
+                print(f"psnr ML[{k}]: {psnr[-1] if x_true is not None else 'N/A'}")
+                
         print("done.")
 
-    x_IMLPNP = xk
-    PSNR_out = psnr_sequence[-1]
+    recon = xk.clone()
+    return recon, loss, psnr, times
 
 def run_MLFBcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
     recon = None
