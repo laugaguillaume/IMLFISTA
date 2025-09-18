@@ -312,10 +312,17 @@ if __name__ == "__main__":
     update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
     print(f"Stepsize: {stepsize}")
 
-    if platform.system() == "Darwin":  # macOS
-        EXPERIMENTS_ROOT = "/Users/edgardesainte-mareville/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/blocks"
-    else:  # Linux ou autre
-        EXPERIMENTS_ROOT = "/home/edgar/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/blocks"
+    cbp = True
+
+if not cbp:
+    if platform.system() == "Darwin":
+        EXPERIMENTS_ROOT = Path("/Users/edgardesainte-mareville/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/blocks")
+    else:
+        EXPERIMENTS_ROOT = Path("/home/edgar/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/blocks")
+else:
+    EXPERIMENTS_ROOT = Path(__file__).resolve().parent / "experiments_results/blocks"  # relatif au repo
+
+EXPERIMENTS_ROOT.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     exp_name = f"exp_{timestamp}_J{J}_mode{update_mode}_reg{reg_weight}_niter{n_iter}_sigma{sigma}"
