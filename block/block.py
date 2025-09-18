@@ -352,74 +352,57 @@ if __name__ == "__main__":
 
     psnrs = [PSNR(y, x_true).item(), PSNR(x_recon_fb, x_true).item(), PSNR(x_recon_mlfb, x_true).item(), PSNR(x_recon_cond, x_true).item()]
     psnrs = [f"{p:.2f}" for p in psnrs]
+    
+    # Créer une figure avec 4 sous-graphiques côte à côte
+    fig, axes = plt.subplots(1, 4, figsize=(28, 6))
 
-    # Plot loss vs iterations
-    plt.figure(figsize=(7, 5))
-
-    plt.plot(loss_cond, color=colors[0], label="BCD cond", linewidth=2)
-    plt.plot(loss_mlfb, color=colors[1], label="BCD MLFB", linewidth=2)
-    plt.plot(loss_fb,   color=colors[2], label="FB", linewidth=2)
-
-    plt.scatter(cycles_cond, [loss_cond[i-1] for i in cycles_cond],
+    # Plot 1: Loss vs iterations
+    axes[0].plot(loss_cond, color=colors[0], label="BCD cond", linewidth=2)
+    axes[0].plot(loss_mlfb, color=colors[1], label="BCD MLFB", linewidth=2)
+    axes[0].plot(loss_fb, color=colors[2], label="FB", linewidth=2)
+    axes[0].scatter(cycles_cond, [loss_cond[i-1] for i in cycles_cond],
                 color=colors[0], marker="o", s=80, label="cycles_cond")
-
-    plt.scatter(cycles_mlfb, [loss_mlfb[i-1] for i in cycles_mlfb],
+    axes[0].scatter(cycles_mlfb, [loss_mlfb[i-1] for i in cycles_mlfb],
                 color=colors[1], marker="x", s=80, label="cycles_mlfb")
+    axes[0].set_xlabel("Iteration")
+    axes[0].set_ylabel("Loss")
+    axes[0].set_title(f"Loss over Iterations\nNumber of cycles: {len(cycles_cond)}")
+    axes[0].legend(frameon=True)
 
-    plt.xlabel("Iteration")
-    plt.ylabel("Loss")
-    plt.title(f"Loss over Iterations\n Number of cycles: {len(cycles_cond)}")
-    plt.legend(frameon=True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(exp_dir, "loss_iter.pdf"))
-    plt.show()
+    # Plot 2: Loss vs time
+    axes[1].plot(times_cond, loss_cond, color=colors[0], label='BCD cond', linewidth=2)
+    axes[1].plot(times_mlfb, loss_mlfb, color=colors[1], label='BCD MLFB', linewidth=2)
+    axes[1].plot(times_fb, loss_fb, color=colors[2], label='FB', linewidth=2)
+    axes[1].set_xlabel('CPU time (s)')
+    axes[1].set_ylabel('Loss')
+    axes[1].set_title('Loss over CPU Time')
+    axes[1].legend(frameon=True)
 
-
-    # Plot loss vs time
-    plt.figure()
-    plt.plot(times_cond, loss_cond, label='BCD cond')
-    plt.plot(times_mlfb, loss_mlfb, label='BCD MLFB')
-    plt.plot(times_fb, loss_fb, label='FB')
-    plt.xlabel('CPU time (s)')
-    plt.ylabel('Loss')
-    plt.title('Loss over CPU Time')
-    plt.legend()
-    plt.savefig(os.path.join(exp_dir, "loss_time.pdf"))
-    plt.show()
-
-
-    # Plot PSNR vs iterations
-    plt.figure(figsize=(7, 5))
-
-    plt.plot(psnr_cond, color=colors[0], label="BCD cond", linewidth=2)
-    plt.plot(psnr_mlfb, color=colors[1], label="BCD MLFB", linewidth=2)
-    plt.plot(psnr_fb,   color=colors[2], label="FB", linewidth=2)
-
-    plt.scatter(cycles_cond, [psnr_cond[i-1] for i in cycles_cond],
+    # Plot 3: PSNR vs iterations
+    axes[2].plot(psnr_cond, color=colors[0], label="BCD cond", linewidth=2)
+    axes[2].plot(psnr_mlfb, color=colors[1], label="BCD MLFB", linewidth=2)
+    axes[2].plot(psnr_fb, color=colors[2], label="FB", linewidth=2)
+    axes[2].scatter(cycles_cond, [psnr_cond[i-1] for i in cycles_cond],
                 color=colors[0], marker="o", s=80, label="cycles_cond")
-
-    plt.scatter(cycles_mlfb, [psnr_mlfb[i-1] for i in cycles_mlfb],
+    axes[2].scatter(cycles_mlfb, [psnr_mlfb[i-1] for i in cycles_mlfb],
                 color=colors[1], marker="x", s=80, label="cycles_mlfb")
+    axes[2].set_xlabel("Iteration")
+    axes[2].set_ylabel("PSNR")
+    axes[2].set_title(f"PSNR over Iterations\nNumber of cycles: {len(cycles_cond)}")
+    axes[2].legend(frameon=True)
 
-    plt.xlabel("Iteration")
-    plt.ylabel("PSNR")
-    plt.title(f"PSNR over Iterations\n Number of cycles: {len(cycles_cond)}")
-    plt.legend(frameon=True)
+    # Plot 4: PSNR vs time
+    axes[3].plot(times_cond, psnr_cond, color=colors[0], label='BCD cond', linewidth=2)
+    axes[3].plot(times_mlfb, psnr_mlfb, color=colors[1], label='BCD MLFB', linewidth=2)
+    axes[3].plot(times_fb, psnr_fb, color=colors[2], label='FB', linewidth=2)
+    axes[3].set_xlabel('CPU time (s)')
+    axes[3].set_ylabel('PSNR')
+    axes[3].set_title('PSNR over CPU Time')
+    axes[3].legend(frameon=True)
+
+    # Ajuster l'espacement et sauvegarder
     plt.tight_layout()
-    plt.savefig(os.path.join(exp_dir, "psnr_iter.pdf"))
-    plt.show()
-
-
-    # Plot PSNR vs time
-    plt.figure()
-    plt.plot(times_cond, psnr_cond, label='BCD cond')
-    plt.plot(times_mlfb, psnr_mlfb, label='BCD MLFB')
-    plt.plot(times_fb, psnr_fb, label='FB')
-    plt.xlabel('CPU time (s)')
-    plt.ylabel('PSNR')
-    plt.title('PSNR over CPU Time')
-    plt.legend()
-    plt.savefig(os.path.join(exp_dir, "psnr_time.pdf"))
+    plt.savefig(os.path.join(exp_dir, "all_plots_combined.pdf"), bbox_inches='tight')
     plt.show()
 
     dinv.utils.plot([x_true, y, x_recon_fb, x_recon_mlfb, x_recon_cond], titles=['Original', f'Observation \nPSNR: {psnrs[0]}', f'Reconstructed (FB) \nPSNR: {psnrs[1]}', f'Reconstructed (BCD MLFB) \nPSNR: {psnrs[2]}', f'Reconstructed (BCD cond) \nPSNR: {psnrs[3]}'], cmap='gray', save_fn=os.path.join(exp_dir, "reconstructions.pdf"))

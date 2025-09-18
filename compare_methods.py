@@ -39,7 +39,7 @@ Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.1/Anorm2
 
 J = 3
-wv_type = 'haar'
+wv_type = 'daubechies8'
 
 # For multilevel algorithms
 multilevel_iter = 5 # Number of multilevel iterations at the fine level
@@ -52,15 +52,18 @@ update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
 
 # Plug and Play denoiser
 denoiser_0 = dinv.models.DRUNet(in_channels=3, out_channels=3, device=device, pretrained="download")
-denoiser = dinv.models.EquivariantDenoiser(denoiser_0, random=True)
-prior_pnp = dinv.optim.prior.PnP(denoiser=denoiser)
+denoiser_pnp = dinv.models.EquivariantDenoiser(denoiser_0, random=True)
+prior_pnp = dinv.optim.prior.PnP(denoiser=denoiser_pnp)
 
 if prior_type == "L1":
     prior = dinv.optim.L1Prior()
+    denoiser = prior.prox
 elif prior_type == "TV":
     prior = dinv.optim.TVPrior(n_it_max=50)
+    denoiser = prior.prox
 elif prior_type == "L1_wavelet":
     prior = dinv.optim.WaveletPrior(level=J, wv=wv_type, p=1, device=device)
+    denoiser = prior.prox
 
 # Block coordinate descent setup
 bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
@@ -73,7 +76,7 @@ args_multilevel = ParametersMultilevel(
     levels=J,
     max_ML_steps=1,
     param_coarse_iter=n_coarse_steps, # Number of coarse iterations
-    step_size=stepsize,
+    step_size=torch.tensor(stepsize),
     info_transfer=wv_type,
     prior=prior,
     denoiser=denoiser,
@@ -83,25 +86,35 @@ args_multilevel = ParametersMultilevel(
     device=device,
 )
 
-args_multilevel.info_transfer = 'sinc'
+args_multilevel.info_transfer = 'daubechies8'
 
-# Initialize multilevel physics
+# Initialize coarse physics
 coarse_physics = {f'level{J}': physics}
-data = physics.mask.data
+coarse_data = physics.mask.data 
+
 for i in range(J-1, 0, -1):
-    coarse_data = args_multilevel.information_transfer.to_coarse(data, data.shape)
+    coarse_data = args_multilevel.information_transfer.to_coarse(coarse_data, coarse_data.shape)
     coarse_physics[f'level{i}'] = dinv.physics.Inpainting(
-        img_size=coarse_data.shape[-2:], mask=coarse_data, device=device
+        tensor_size=coarse_data.shape[1:],
+        mask=coarse_data, 
+        device=physics.mask.device 
     )
+    
+    print(f"Level {i}: coarse_data.shape = {coarse_data.shape}")
+
 args_multilevel.coarse_physics = coarse_physics
 
-# Initialize multilevel observations
+# Initialize coarse observations
 observations = {f'level{J}': y}
 current_obs = y.clone()
 for i in range(J-1, 0, -1):
-    coarse_obs = args_multilevel.information_transfer.to_coarse(current_obs, current_obs.shape[-3:])
-    observations[f'level{i}'] = coarse_obs
-    current_obs = coarse_obs
+    current_obs = args_multilevel.information_transfer.to_coarse(
+        current_obs, 
+        current_obs.shape[-3:]
+    )
+    observations[f'level{i}'] = current_obs
+    print(f"Level {i}: observation shape = {current_obs.shape}")
+
 args_multilevel.observations = observations
 
 #%%----- Experiment directory setup to save parameters and figures -----%%
@@ -161,38 +174,59 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
     levels = params['J']
     param_regularization = params['reg_weight']
     param_gamma = params['stepsize']
-
-    start = time.time()
+    
+    # Debug : afficher les shapes
+    print(f"Debug: x0.shape = {x0.shape}")
+    print(f"Debug: y.shape = {y.shape}")
+    print(f"Debug: x_true.shape = {x_true.shape}")
+    print(f"Debug: levels = {levels}")
+    print(f"Debug: args_multilevel.info_transfer = {args_multilevel.info_transfer}")
+    print(f"Debug: args_multilevel.step_size = {args_multilevel.step_size} (type: {type(args_multilevel.step_size)})")
+    
+    start = time.process_time()
+    
     with torch.no_grad():
         for k in range(params['n_iter']):
-            #xk_prev = xk.clone()
-
+            print(f"Debug: Iteration {k}, xk.shape = {xk.shape}")
+            
             if k < params['multilevel_iter']:
-                xk = MultiLevel(
-                    xk,
-                    levels,
-                    levels - 1,
-                    args_multilevel,
-                    param_regularization,
-                    cst_grad,
-                    device,
-                )
+                print(f"Debug: Calling MultiLevel at iteration {k}")
+                try:
+                    xk = MultiLevel(
+                        xk,
+                        levels,
+                        levels - 1,
+                        args_multilevel,
+                        param_regularization,
+                        cst_grad,
+                        device,
+                    )
+                    print(f"Debug: MultiLevel succeeded, xk.shape = {xk.shape}")
+                except Exception as e:
+                    print(f"Debug: MultiLevel failed at iteration {k} with error: {e}")
+                    print(f"Debug: xk.shape before MultiLevel = {xk.shape}")
+                    raise e
+            
+            # Gradient step
             xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
+            
+            # Proximal step
             if isinstance(prior, dinv.optim.TVPrior):
                 xk = prior.prox(xk, gamma=param_gamma * param_regularization)
             else:
                 xk = prior.prox(xk, gamma=[param_gamma * param_regularization])
 
-            current_loss = data_fidelity(
-                xk, y, physics
-            ) + param_regularization * prior.fn(xk)
+            # Calcul de la loss et PSNR
+            current_loss = data_fidelity(xk, y, physics) + param_regularization * prior.fn(xk)
             loss.append(current_loss.item())
-            times.append(time.time() - start)
+            
             current_psnr = PSNR(xk, x_true).item()
             psnr.append(current_psnr)
+            
+            times.append(time.process_time() - start)
 
-            if k % 10 == 0:
-                print(f"crit ML[{k}] / snr ML[{k}]: {loss[k]} / {psnr[k]}")
+            if k % 5 == 0:  # Plus fréquent pour debug
+                print(f"Debug: Iteration {k} completed - loss: {loss[k]:.6f}, psnr: {psnr[k]:.2f}")
 
     recon = xk.clone()
     return recon, loss, psnr, times
@@ -279,7 +313,7 @@ x0 = y.clone()
 
 methods = {
     "FB": run_FB,
-    #"MLFB": run_MLFB,
+    "MLFB": run_MLFB,
     #"BCD": run_BCD,
     "PnP": run_PnP,
     "MLPnP": run_MLPnP,
