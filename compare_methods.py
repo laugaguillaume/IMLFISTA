@@ -105,8 +105,6 @@ for i in range(J-1, 0, -1):
         mask=coarse_data, 
         device=physics.mask.device 
     )
-    
-    print(f"Level {i}: coarse_data.shape = {coarse_data.shape}")
 
 args_multilevel.coarse_physics = coarse_physics
 
@@ -119,7 +117,6 @@ for i in range(J-1, 0, -1):
         current_obs.shape[-3:]
     )
     observations[f'level{i}'] = current_obs
-    print(f"Level {i}: observation shape = {current_obs.shape}")
 
 args_multilevel.observations = observations
 
