@@ -19,9 +19,12 @@ sns.set_theme()
 sns.color_palette("colorblind")
 colors = sns.color_palette("colorblind")
 
+device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+print(f"Using device: {device}")
+
 PSNR = dinv.metric.PSNR()
 
-device = torch.device('cpu')
+# Ground truth
 x_true = dinv.utils.load_example("butterfly.png", device=device)
 
 #%%------ MODEL -----%%

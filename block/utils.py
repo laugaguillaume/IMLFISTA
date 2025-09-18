@@ -34,7 +34,7 @@ def wavelet_torch_to_numpy(coeffs):
 
     return (approx_np, *details_np)
 
-def wavelet_numpy_to_torch(coeffs):
+def wavelet_numpy_to_torch(coeffs, device='cpu'):
     """
     Convert wavelet coefficients from NumPy arrays to PyTorch tensors.
 
@@ -42,6 +42,7 @@ def wavelet_numpy_to_torch(coeffs):
         coeffs: Tuple containing (approx_array, detail_array1, detail_array2, ...)
                 where approx_array is the approximation coefficients as a numpy.ndarray
                 and detail_arrays are the detail coefficients as numpy.ndarrays
+        device: Device to place the tensors on ('cpu' or 'cuda')
 
     Returns:
         Tuple containing (approx_tensor, detail_tensor1, detail_tensor2, ...)
@@ -49,6 +50,6 @@ def wavelet_numpy_to_torch(coeffs):
     """
     approx_np = coeffs[0]
     details_np = coeffs[1:]
-    approx_torch = torch.tensor(approx_np, device='cpu', dtype=torch.float32)
-    details_torch = [torch.tensor(detail, device='cpu', dtype=torch.float32) for detail in details_np]
+    approx_torch = torch.tensor(approx_np, device=device, dtype=torch.float32)
+    details_torch = [torch.tensor(detail, device=device, dtype=torch.float32) for detail in details_np]
     return list((approx_torch, *details_torch))

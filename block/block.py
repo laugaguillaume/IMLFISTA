@@ -10,6 +10,7 @@ import json
 from datetime import datetime
 import platform
 import seaborn as sns
+from pathlib import Path
 
 # Plot settings
 sns.set_theme()
@@ -35,10 +36,11 @@ from block.utils import wavelet_numpy_to_torch, wavelet_torch_to_numpy
 
 class Projection():
 
-    def __init__(self, image_size, wv_type, num_levels):
+    def __init__(self, image_size, wv_type, num_levels, device='cpu'):
         self.image_size = image_size
         self.wv_type = wv_type
         self.num_levels = num_levels
+        self.device = device
 
     def project(self, coeffs, mode, level=0):
         if mode == 'details':
@@ -52,7 +54,7 @@ class Projection():
         # Coeff : one approximation coefficient tensor or one detail coefficient tuple (tuple of 3 detail tensors)
         zero = np.zeros(self.image_size)
         coeffs_zero = pywt.wavedec2(zero, self.wv_type, level=self.num_levels)
-        coeffs_zero = wavelet_numpy_to_torch(coeffs_zero)
+        coeffs_zero = wavelet_numpy_to_torch(coeffs_zero, device=self.device)
 
         # Convert tuple to list for mutability
         coeffs_zero = list(coeffs_zero)
@@ -114,31 +116,32 @@ class UpdateList():
         return update_list
 
 class BlockCoordinateDescent():
-    def __init__(self, img_size, wv_type, physics, data_fidelity, prior, max_levels, stepsize=1e-3):
+    def __init__(self, img_size, wv_type, physics, data_fidelity, prior, max_levels, stepsize=1e-3, device='cpu'):
         self.img_size = img_size
         self.wv_type = wv_type
         self.physics = physics
         self.data_fidelity = data_fidelity
         self.prior = prior
         self.max_levels = max_levels
+        self.device = device
 
         self.stepsize = stepsize
         self.reg_weight = None
         self.y = None
 
-        self.wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device='cpu')
-        self.proj = Projection(self.img_size, self.wv_type, self.max_levels)
+        self.wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device=self.device)
+        self.proj = Projection(self.img_size, self.wv_type, self.max_levels, device=self.device)
 
     def reconstruct_image(self, coeffs):
         """Reconstruct image from wavelet coefficients"""
         coeffs_np = wavelet_torch_to_numpy(coeffs)
         x = pywt.waverec2(coeffs_np, self.wv_type)
-        return torch.tensor(x, dtype=torch.float32)
+        return torch.tensor(x, dtype=torch.float32, device=self.device)
 
     def img_to_wavelet(self, x):
         """Convert image to wavelet coefficients"""
         coeffs = pywt.wavedec2(x.cpu().numpy(), self.wv_type, level=self.max_levels)
-        return wavelet_numpy_to_torch(coeffs)
+        return wavelet_numpy_to_torch(coeffs, device=self.device)
 
     def compute_metrics(self, x_wavelet, x_img=None):
         if x_img is None:
@@ -216,7 +219,7 @@ class BlockCoordinateDescent():
         self.cycles = []
 
         # Wavelet prior to compute the objective function values
-        wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device='cpu')
+        wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device=self.device)
         xk_wavelet = self.img_to_wavelet(x0)
 
         # Update list
@@ -247,7 +250,7 @@ class BlockCoordinateDescent():
 
     def FB(self, y, num_iterations, reg_weight, metrics=False):
         # Wavelet prior to compute the objective function values AND to use in the proximal step
-        wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device='cpu')
+        wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device=self.device)
         # wavelet_prior = dinv.optim.TVPrior(n_it_max=50)
         # The wavelet prior seems to introduce a decrease in the PSNR, that does not happen with TV prior...
 
@@ -276,7 +279,9 @@ if __name__ == "__main__":
     import json
     from datetime import datetime
 
-    device = torch.device('cpu')
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    print(f"Using device: {device}")
+
     x_true = dinv.utils.load_example("butterfly.png", device=device)
 
     # Wavelet parameters
@@ -306,7 +311,7 @@ if __name__ == "__main__":
     reg_weight = 1e-4
 
     # Parameters
-    n_iter = 100
+    n_iter = 1000
     Anorm2 = physics.compute_norm(x_true).item()
     stepsize = 0.2/Anorm2
     update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
@@ -314,15 +319,15 @@ if __name__ == "__main__":
 
     cbp = True
 
-if not cbp:
-    if platform.system() == "Darwin":
-        EXPERIMENTS_ROOT = Path("/Users/edgardesainte-mareville/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/blocks")
+    if not cbp:
+        if platform.system() == "Darwin":
+            EXPERIMENTS_ROOT = Path("/Users/edgardesainte-mareville/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/blocks")
+        else:
+            EXPERIMENTS_ROOT = Path("/home/edgar/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/blocks")
     else:
-        EXPERIMENTS_ROOT = Path("/home/edgar/kDrive/Documents/Thèse/Experiments/multilevel_conditional_reconstruction/blocks")
-else:
-    EXPERIMENTS_ROOT = Path(__file__).resolve().parent / "experiments_results/blocks"  # relatif au repo
+        EXPERIMENTS_ROOT = Path(__file__).resolve().parent / "../experiments_results/blocks"  # relatif au repo
 
-EXPERIMENTS_ROOT.mkdir(parents=True, exist_ok=True)
+    EXPERIMENTS_ROOT.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     exp_name = f"exp_{timestamp}_J{J}_mode{update_mode}_reg{reg_weight}_niter{n_iter}_sigma{sigma}"
@@ -331,7 +336,7 @@ EXPERIMENTS_ROOT.mkdir(parents=True, exist_ok=True)
 
     params = {
         "image": "butterfly.png",
-        "physics": "blur + Gaussian noise",
+        "physics": "Inpainting + Gaussian noise",
         "sigma": sigma,
         "reg_weight": reg_weight,
         "n_iter": n_iter,
@@ -345,7 +350,7 @@ EXPERIMENTS_ROOT.mkdir(parents=True, exist_ok=True)
     with open(params_path, "w") as f:
         json.dump(params, f, indent=4)
 
-    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
+    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize, device=device)
 
     x0 = y.clone()
 
