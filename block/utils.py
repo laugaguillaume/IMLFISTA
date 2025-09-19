@@ -50,6 +50,36 @@ def wavelet_numpy_to_torch(coeffs, device='cpu'):
     """
     approx_np = coeffs[0]
     details_np = coeffs[1:]
-    approx_torch = torch.tensor(approx_np, device=device, dtype=torch.float32)
-    details_torch = [torch.tensor(detail, device=device, dtype=torch.float32) for detail in details_np]
-    return list((approx_torch, *details_torch))
+
+    # Convert approximation coefficients
+    approx_torch = torch.from_numpy(approx_np.astype(np.float32)).to(device)
+
+    # Convert detail coefficients efficiently
+    details_torch = []
+    for detail in details_np:
+        if isinstance(detail, tuple) and len(detail) == 3:
+            # detail is a tuple of (horizontal, vertical, diagonal) arrays
+            h_arr, v_arr, d_arr = detail
+
+            # Ensure arrays are contiguous and float32
+            h_arr = np.ascontiguousarray(h_arr.astype(np.float32))
+            v_arr = np.ascontiguousarray(v_arr.astype(np.float32))
+            d_arr = np.ascontiguousarray(d_arr.astype(np.float32))
+
+            # Stack the three arrays into a single array with shape [3, ...]
+            detail_stacked = np.stack([h_arr, v_arr, d_arr], axis=0)
+
+            # Convert to torch tensor
+            detail_torch = torch.from_numpy(detail_stacked).to(device)
+            details_torch.append(detail_torch)
+        else:
+            # Fallback for other formats
+            if not detail.flags.c_contiguous:
+                detail = np.ascontiguousarray(detail)
+            if detail.dtype != np.float32:
+                detail = detail.astype(np.float32)
+
+            detail_torch = torch.from_numpy(detail).to(device)
+            details_torch.append(detail_torch)
+
+    return [approx_torch, *details_torch]
