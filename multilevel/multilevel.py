@@ -16,9 +16,14 @@ import matplotlib as mpl
 import scipy.io as sio
 import copy
 import pywt
+import time
+import os
+from pathlib import Path
 from multilevel.info_transfer import DownsamplingTransfer, create_filter
 from deepinv.physics import Physics, Downsampling
 from deepinv.models import Denoiser
+
+PSNR = dinv.metric.PSNR()
 
 from multilevel.utils import nabla, local_average, get_approximation_previous_scale, comparative_plot_wavelets
 
@@ -31,6 +36,7 @@ def MultiLevel(
     param_regularization,
     cst_grad=None,
     device="cpu",
+    x_true=None,
 ):
     """
     Multilevel step for image reconstruction
@@ -55,6 +61,7 @@ def MultiLevel(
     step_size = args_multilevel.step_size
     param_coarse_iter = args_multilevel.param_coarse_iter
     physics = args_multilevel.physics
+    physics_fine = args_multilevel.physics
     max_ML_steps = args_multilevel.max_ML_steps
     coarse_physics = args_multilevel.coarse_physics
     observations = args_multilevel.observations
@@ -65,6 +72,7 @@ def MultiLevel(
     coarse_observation = observations[f"level{levels}"]
     coarse_physics = coarse_physics[f"level{levels}"]
     param_reg_fine = param_regularization
+    losses, times, psnr_list = [], [], []
     if isinstance(prior, dinv.optim.prior.PnP):
         param_reg_coarse = param_reg_fine
     else:
@@ -103,14 +111,18 @@ def MultiLevel(
             param_coarse_iter
         ):
             if levels > 1 and k < max_ML_steps:
-                xk_coarse = MultiLevel(
+                xk_coarse, losses_intermediate, times_intermediate, psnrs_intermediate = MultiLevel(
                     xk_coarse,
                     level_max,
                     levels - 1,
                     args_multilevel,
                     param_reg_coarse,
                     cst_grad,
+                    x_true=x_true,
                 )  # Recursive call if levels > 1
+                losses += losses_intermediate
+                times += times_intermediate
+                psnr_list += psnrs_intermediate
 
             if isinstance(prior, dinv.optim.prior.PnP):
                 xk_coarse = prior.denoiser(
@@ -120,6 +132,11 @@ def MultiLevel(
                     * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics),
                     param_reg_coarse,
                 )
+                losses.append(data_fidelity(information_transfer.to_fine(xk_coarse, xk.shape[-3:]), observation, physics).item())
+                times.append(time.process_time())
+                if x_true is not None:
+                    psnr_list.append(PSNR(xk_fine, x_true).item())
+
             else:
                 xk_coarse = (
                     xk_coarse
@@ -128,6 +145,14 @@ def MultiLevel(
                     * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
                     - step_size * grad_prior(xk_coarse, param_reg_coarse)
                 )  # Coarse gradient descent
+
+                observation_fine = observations[f"level{level_max}"]  # Fine observation
+                xk_fine = reconstruct_to_finest_level(xk_coarse, levels, level_max, args_multilevel)
+                print(f'Loss at coarse iteration {k} (level {levels}): {data_fidelity(xk_fine, observation_fine, physics_fine).item() + param_reg_fine * prior.fn(xk_fine).item()}')
+                losses.append(data_fidelity(xk_fine, observation_fine, physics_fine).item() + param_reg_fine * prior.fn(xk_fine).item())
+                times.append(time.process_time())
+                if x_true is not None:
+                    psnr_list.append(PSNR(xk_fine, x_true).item())
 
     # Coarse correction
     coarse_correction = xk_coarse - x0_coarse
@@ -149,6 +174,25 @@ def MultiLevel(
     )
     # xk = xk + step_coarse* coarse_correction
     # print(f"Step size at level {levels}: {step_coarse}")
+    return xk, losses, times, psnr_list
+
+def reconstruct_to_finest_level(xk_coarse, current_level, target_level, args_multilevel):
+    if current_level >= target_level:
+        return xk_coarse.clone()
+
+    xk = xk_coarse.clone()
+
+    for level in range(current_level, target_level):
+        target_obs = args_multilevel.observations[f"level{level+1}"]
+        target_shape = target_obs.shape[-3:]
+
+        info_transfer = copy.deepcopy(args_multilevel.information_transfer)
+
+        if xk.dim() == 3:  # Si pas de dimension batch, l'ajouter
+            xk = xk.unsqueeze(0)
+        info_transfer._initialize_operator(xk, target_shape)
+        xk = info_transfer.to_fine(xk, target_shape)
+
     return xk
 
 
