@@ -9,6 +9,7 @@ import deepinv as dinv
 import time
 import seaborn as sns
 from pathlib import Path
+from tqdm import tqdm
 
 from block.block import BlockCoordinateDescent
 from multilevel.multilevel import ParametersMultilevel, MultiLevel, MultiLevelWavelets, WaveletDenoiserConditional
@@ -44,8 +45,8 @@ prior_type = "L1_wavelet"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 1000
-reg_weight = 1e-4
+n_iter = 2000
+reg_weight = 1e-1
 Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.05/Anorm2
 
@@ -66,6 +67,8 @@ update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
 # Plug and Play denoiser
 denoiser_0 = dinv.models.DRUNet(in_channels=3, out_channels=3, device=device, pretrained="download")
 denoiser_pnp = dinv.models.EquivariantDenoiser(denoiser_0, random=True)
+pytorch_total_params = sum(p.numel() for p in denoiser_pnp.parameters())
+print(f"Number of parameters in the denoiser: {pytorch_total_params}")
 prior_pnp = dinv.optim.prior.PnP(denoiser=denoiser_pnp)
 
 # Conditional Denoiser
@@ -180,16 +183,19 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
 
     xk = x0.clone().to(device)
-    for k in range(params['n_iter']):
-        xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
-        xk = prior.prox(xk, gamma=params['stepsize'] * params['reg_weight'])
+    with torch.no_grad():
+        with tqdm(range(params['n_iter']), desc="FB") as t:
+            for k in t:
+                xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
+                xk = prior.prox(xk, gamma=params['stepsize'] * params['reg_weight'])
 
-        if x_true is not None:
-            current_psnr = PSNR(xk, x_true).item()
-            psnr.append(current_psnr)
-        current_loss =  data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
-        loss.append(current_loss)
-        times.append(time.process_time() - start)
+                if x_true is not None:
+                    current_psnr = PSNR(xk, x_true).item()
+                    psnr.append(current_psnr)
+                current_loss =  data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
+                t.set_postfix(loss=f"{current_loss:.4f}")
+                loss.append(current_loss)
+                times.append(time.process_time() - start)
 
     return xk, loss, psnr, times
 
@@ -204,42 +210,43 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
     global biggest_multilevel_iter
 
     with torch.no_grad():
-        for k in range(params['n_iter']):
-            cst_grad_device = None if cst_grad is None else cst_grad.to(device)
-            if k < params['multilevel_iter']:
-                xk, intermediate_losses, intermediate_times, intermediate_psnrs = MultiLevel(
-                    xk,
-                    levels,
-                    levels - 1,
-                    args_multilevel,
-                    param_regularization,
-                    cst_grad_device,
-                    device=device,
-                    x_true=x_true
-                )
-                loss += intermediate_losses
-                times += intermediate_times
-                psnr += intermediate_psnrs
-                biggest_multilevel_iter = len(loss)
+        with tqdm(range(params['n_iter'])) as t:
+            for k in t:
+                    cst_grad_device = None if cst_grad is None else cst_grad.to(device)
+                    if k < params['multilevel_iter']:
+                        xk, intermediate_losses, intermediate_times, intermediate_psnrs = MultiLevel(
+                            xk,
+                            levels,
+                            levels - 1,
+                            args_multilevel,
+                            param_regularization,
+                            cst_grad_device,
+                            device=device,
+                            x_true=x_true
+                        )
+                        loss += intermediate_losses
+                        times += intermediate_times
+                        psnr += intermediate_psnrs
+                        biggest_multilevel_iter = len(loss)
 
-            # Gradient step
-            xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
+                    # Gradient step
+                    xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
 
-            # Proximal step
-            if isinstance(prior, dinv.optim.TVPrior):
-                xk = prior.prox(xk, gamma=param_gamma * param_regularization)
-            else:
-                xk = prior.prox(xk, gamma=[param_gamma * param_regularization])
+                    # Proximal step
+                    if isinstance(prior, dinv.optim.TVPrior):
+                        xk = prior.prox(xk, gamma=param_gamma * param_regularization)
+                    else:
+                        xk = prior.prox(xk, gamma=[param_gamma * param_regularization])
 
-            # Compute metrics
-            current_loss = data_fidelity(xk, y, physics) + param_regularization * prior.fn(xk)
-            print(current_loss.item())
-            loss.append(current_loss.item())
+                    # Compute metrics
+                    current_loss = data_fidelity(xk, y, physics) + param_regularization * prior.fn(xk)
+                    t.set_postfix(loss=f"{current_loss.item():.4f}")
+                    loss.append(current_loss.item())
 
-            current_psnr = PSNR(xk, x_true).item()
-            psnr.append(current_psnr)
+                    current_psnr = PSNR(xk, x_true).item()
+                    psnr.append(current_psnr)
 
-            times.append(time.process_time())
+                    times.append(time.process_time())
 
     recon = xk.clone()
     times = [t - start for t in times]  # Convert to elapsed time
@@ -258,16 +265,17 @@ def run_PnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pr
     start = time.process_time()
 
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
+    xk = x0.clone().to(device)
 
-    xk = x0.clone()
-    for k in range(params['n_iter']):
-        xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
-        xk = denoiser(xk, sigma=params['reg_weight'])
+    with torch.no_grad():
+        for k in tqdm(range(params['n_iter'])):
+            xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
+            xk = denoiser(xk, sigma=params['reg_weight'])
 
-        if x_true is not None:
-            current_psnr = PSNR(xk, x_true).item()
-            psnr.append(current_psnr)
-        times.append(time.process_time() - start)
+            if x_true is not None:
+                current_psnr = PSNR(xk, x_true).item()
+                psnr.append(current_psnr)
+            times.append(time.process_time() - start)
 
     return xk, loss, psnr, times
 
@@ -295,7 +303,7 @@ def run_MLPnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, 
         xk = ml_init
 
         # Main iteration loop
-        for k in range(params['n_iter']):
+        for k in tqdm(range(params['n_iter'])):
             xk_prev = xk.clone()
 
             if k < max_ML_steps:
@@ -332,29 +340,31 @@ def run_MLFBcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidel
     start = time.process_time()
 
     with torch.no_grad():
-        for k in range(params['n_iter']):
+        with tqdm(range(params['n_iter']), desc="MLFBcond") as t:
+            for k in t:
 
-            if k < params['multilevel_iter']:
-                xk = MultiLevelWavelets(
-                    xk,
-                    levels,
-                    levels - 1,
-                    args_multilevel,
-                    param_regularization,
-                    cst_grad,
-                    device,
-                )
+                if k < params['multilevel_iter']:
+                    xk = MultiLevelWavelets(
+                        xk,
+                        levels,
+                        levels - 1,
+                        args_multilevel,
+                        param_regularization,
+                        cst_grad,
+                        device,
+                    )
 
-            # Gradient step
-            xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
-            # Proximal step
-            xk = denoiser_cond(xk, gamma=params['stepsize'] * params['reg_weight'])
+                # Gradient step
+                xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
+                # Proximal step
+                xk = denoiser_cond(xk, gamma=params['stepsize'] * params['reg_weight'])
 
-            # Compute metrics
-            current_psnr = PSNR(xk, x_true).item()
-            psnr.append(current_psnr)
+                # Compute metrics
+                current_psnr = PSNR(xk, x_true).item()
+                t.set_postfix(psnr=f"{current_psnr:.4f} dB")
+                psnr.append(current_psnr)
 
-            times.append(time.process_time() - start)
+                times.append(time.process_time() - start)
 
     recon = xk.clone()
     return recon, loss, psnr, times
@@ -373,7 +383,7 @@ methods = {
     "FB": run_FB,
     #"MLFB": run_MLFB,
     #"BCD": run_BCD_MLFB,
-    "PnP": run_PnP,
+    #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
     "MLFBcond": run_MLFBcond,
     #"BCDcond": run_BCDcond

@@ -11,6 +11,7 @@ from datetime import datetime
 import platform
 import seaborn as sns
 from pathlib import Path
+from tqdm import tqdm
 
 # Plot settings
 sns.set_theme()
@@ -229,7 +230,7 @@ class BlockCoordinateDescent():
             loss, times = [], []
             start = time.process_time()
 
-        for it in range(n_iter):
+        for it in tqdm(range(n_iter)):
             if metrics:
                 x_recon = self.reconstruct_image(xk_wavelet)
                 crit = self.data_fidelity.fn(x_recon, y, self.physics).item() + reg_weight * wavelet_prior.fn(x_recon).item()

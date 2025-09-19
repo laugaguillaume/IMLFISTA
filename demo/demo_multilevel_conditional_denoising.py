@@ -50,9 +50,14 @@ physics = dinv.physics.Blur(filter_0, device=device, padding="reflect")
 seed = torch.manual_seed(0)  # Random seed for reproducibility
 
 sigma = 0.01
+noise_model = dinv.physics.GaussianNoise(sigma=sigma)
+physics = dinv.physics.Inpainting(tensor_size=x_true.shape[1:], mask=0.8, device=device, noise_model=noise_model)
+seed = torch.manual_seed(0)  # Random seed for reproducibility
+
+sigma = 0.01
 
 # Define noise
-physics.noise_model = dinv.physics.GaussianNoise(sigma=sigma)
+#physics.noise_model = dinv.physics.GaussianNoise(sigma=sigma)
 
 # Construct observation and display original image
 y = physics(x_true)
@@ -87,7 +92,7 @@ elif args_prior == "Wavelet":
 
 # Define regularization parameter
 # param_regularization = 2*sigma**2 # From the Bayesian interpretation
-param_regularization = 1e-6
+param_regularization = 1e-2
 
 # Define algorithm parameters
 random_tensor = torch.randn(x_true.shape).to(device)
@@ -102,12 +107,12 @@ elif args_algo == "FB":
     print('Using FB algorithm')
     d = 0
     #param_gamma = 1.95 * param_gamma
-    param_gamma = 0.95 * param_gamma
+    param_gamma = 0.1 * param_gamma
     param_gamma_ML = param_gamma
 
 '''param_gamma = 0.95 * torch.ones(1, device=device) / Anorm2  # For coherence we use this step-size for all algorithms
 param_gamma_gamma_ML = 1.95 * param_gamma'''
-param_iter = 100  # number of iterations
+param_iter = 10000  # number of iterations
 a = 2.1  # inertia parameter
 
 # Define multilevel parameters
@@ -136,7 +141,7 @@ args_multilevel = ParametersMultilevel(
 #%% ----- I) Multilevel Iterations with Conditional Denoiser -----
 
 crit_ML_cond = 1e10 * np.ones(param_iter)
-psnr_ML_cond = 1e10 * np.ones(param_iter)
+psnr_ML_cond = perf_psnr(back, x_true).item() * np.ones(param_iter)
 diff_ML_cond = []
 data_fidelity_crit_ML_cond = []
 
@@ -176,7 +181,13 @@ x_est_ml_cond = xk.clone()
 end = time.time()
 time_ML_cond = end - start
 
+plt.plot(psnr_ML_cond)
+plt.show()
 
+dinv.utils.plot(x_est_ml_cond)
+
+import sys
+sys.exit()
 #%% ----- II) Multilevel FB -----
 
 crit_ML = 1e10 * np.ones(param_iter)

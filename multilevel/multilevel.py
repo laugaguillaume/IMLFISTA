@@ -292,17 +292,14 @@ def MultiLevelWavelets(
     """
     if no_intermediate_GD:
         with torch.no_grad():
-            print(f'Level {levels}')
             if levels == 1:
                 for k in range(max_ML_steps):
-                    print(f'GD at coarse level (iteration {k})')
                     # GD only at coarser scale
                     xk_coarse = (
                         xk_coarse
                         - step_size * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
                 )
             else:
-                print(f'No GD at level {levels}, only thresholding')
                 # no GD, only thresholding
                 LH, HL, HH = conditional_thresholding(
                     {"LH": LH, "HL": HL, "HH": HH}, xk_coarse, global_threshold=param_reg_coarse
@@ -310,7 +307,6 @@ def MultiLevelWavelets(
     else:
         with torch.no_grad():
             for k in range(param_coarse_iter):
-                print(f'Iteration {k} at level {levels}')
                 if levels > 1 and k < max_ML_steps:
                     xk_coarse = MultiLevelWavelets(
                         xk_coarse,
@@ -325,7 +321,6 @@ def MultiLevelWavelets(
                     )  # Recursive call if levels > 1
 
                 if use_coherence:
-                    print('Using coherence term')
                     # Coarse gradient descent with coherence term + grad prior
                     xk_coarse = (
                         xk_coarse
@@ -335,7 +330,6 @@ def MultiLevelWavelets(
                         - step_size * grad_prior(xk_coarse, param_reg_coarse)
                     )  # Coarse gradient descent
                 else:
-                    print('Standard intermediate gradient descent')
                     # Coarse gradient descent but no coherence term nor grad prior
                     xk_coarse = (
                         xk_coarse
