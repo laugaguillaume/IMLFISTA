@@ -10,8 +10,10 @@ import time
 import seaborn as sns
 from pathlib import Path
 from tqdm import tqdm
+import pywt
 
 from block.block import BlockCoordinateDescent
+from block.utils import wavelet_numpy_to_torch, wavelet_torch_to_numpy
 from multilevel.multilevel import ParametersMultilevel, MultiLevel, MultiLevelWavelets, WaveletDenoiserConditional
 from multilevel.multilevel_initialization import ml_init_pnp
 
@@ -375,6 +377,36 @@ def run_BCDcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fideli
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=params['n_iter'], n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFBcond', metrics=True)
     return recon, loss, psnr, times
 
+def run_coarse_GD(x0, y=y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
+    xk = x0.clone().to(device)
+    n_iter = params['n_coarse_steps']
+    coarsest_physics = coarse_physics[f'level{1}']
+    coarsest_observation = observations[f'level{1}']
+    xk_coeffs_np = pywt.wavedec2(xk.detach().numpy(), wavelet=params['wavelet'], level=params['J'], mode='periodization')
+    xk_coeffs = wavelet_numpy_to_torch(xk_coeffs_np)
+    approx = xk_coeffs[0].clone().to(device)
+    dinv.utils.plot(approx)
+
+    print(approx.shape, coarsest_observation.shape)
+
+    for k  in range(n_iter):
+        approx = approx - params['stepsize'] * 0.01 * coarsest_physics.A_adjoint(approx) * (coarsest_physics.A(approx) - coarsest_observation)
+        dinv.utils.plot(approx)
+
+    xk_coeffs[0] = approx
+    xk = torch.from_numpy(pywt.waverec2(wavelet_torch_to_numpy(xk_coeffs), wavelet=params['wavelet'], mode='periodization'))
+    
+
+    xk = denoiser_cond(xk)
+
+    dinv.utils.plot(xk)
+    
+    return xk
+
+recon_approx = run_coarse_GD(x0=y)
+    
+import sys
+sys.exit()
 
 #%%--- Run methods %%%---
 x0 = y.clone()

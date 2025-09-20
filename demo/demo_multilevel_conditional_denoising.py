@@ -49,10 +49,10 @@ filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
 physics = dinv.physics.Blur(filter_0, device=device, padding="reflect")
 seed = torch.manual_seed(0)  # Random seed for reproducibility
 
-sigma = 0.01
+'''sigma = 0.01
 noise_model = dinv.physics.GaussianNoise(sigma=sigma)
 physics = dinv.physics.Inpainting(tensor_size=x_true.shape[1:], mask=0.8, device=device, noise_model=noise_model)
-seed = torch.manual_seed(0)  # Random seed for reproducibility
+seed = torch.manual_seed(0)  # Random seed for reproducibility'''
 
 sigma = 0.01
 
@@ -107,7 +107,7 @@ elif args_algo == "FB":
     print('Using FB algorithm')
     d = 0
     #param_gamma = 1.95 * param_gamma
-    param_gamma = 0.1 * param_gamma
+    param_gamma = 0.1 * param_gamma # Initial value : 0.95 * param_gamma
     param_gamma_ML = param_gamma
 
 '''param_gamma = 0.95 * torch.ones(1, device=device) / Anorm2  # For coherence we use this step-size for all algorithms
