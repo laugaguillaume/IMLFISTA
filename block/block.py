@@ -219,27 +219,25 @@ class BlockCoordinateDescent():
         self.current_iter = 0
         self.cycles = []
 
-        # Wavelet prior to compute the objective function values
-        wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device=self.device)
         xk_wavelet = self.img_to_wavelet(x0)
 
         # Update list
         update_list = UpdateList(self.max_levels).get_list(type=update_mode)
 
         if metrics:
-            loss, times = [], []
             start = time.process_time()
 
-        for it in tqdm(range(n_iter)):
-            if metrics:
-                x_recon = self.reconstruct_image(xk_wavelet)
-                crit = self.data_fidelity.fn(x_recon, y, self.physics).item() + reg_weight * wavelet_prior.fn(x_recon).item()
-                print(f"Iteration {it}/{n_iter}, Crit: {crit:.2f}")
+        with torch.no_grad():
+            with tqdm(range(n_iter), desc=f"BCD {update_mode}") as t:
+                for it in t:
+                    if metrics:
+                        x_recon = self.reconstruct_image(xk_wavelet)
+                        t.set_postfix_str(f"loss={self.data_fidelity.fn(x_recon, y, self.physics).item():.2f}")
 
-            # Update detail coefficients from coarse to fine
-            for updated_blocks in update_list:
-                xk_wavelet = self.update_blocks(xk_wavelet, y, n_iter_coarse=n_iter_coarse, updated_blocks=updated_blocks, reg_weight=reg_weight)
-            self.cycles.append(self.current_iter)
+                    # Update detail coefficients from coarse to fine
+                    for updated_blocks in update_list:
+                        xk_wavelet = self.update_blocks(xk_wavelet, y, n_iter_coarse=n_iter_coarse, updated_blocks=updated_blocks, reg_weight=reg_weight)
+                    self.cycles.append(self.current_iter)
 
         x_recon = self.reconstruct_image(xk_wavelet)
 

@@ -27,6 +27,75 @@ PSNR = dinv.metric.PSNR()
 
 from multilevel.utils import nabla, local_average, get_approximation_previous_scale, comparative_plot_wavelets
 
+def MultiLevel2(xk, level_max, levels, args_multilevel, param_regularization, cst_grad=None, device='cpu', x_true=None, xk_finest=None):
+    """
+    Multilevel step for image reconstruction
+    """
+    if not isinstance(args_multilevel, ParametersMultilevel):
+        raise ValueError("args_multilevel must be an instance of ParametersMultilevel")
+    if levels < 1:
+        return xk
+    # xk: current image
+    # information_transfer: function to transfer information between levels
+    # levels: number of levels
+    # param_iter: number of iterations at coarse level
+    # data_fidelity: data fidelity term
+    # cst_grad: first order coherence term from previous level
+    """
+    Unpack parameters for readability
+    """
+    data_fidelity = args_multilevel.data_fidelity
+    prior = args_multilevel.prior
+    grad_prior = args_multilevel.grad_prior
+    denoiser = args_multilevel.denoiser
+    step_size = args_multilevel.step_size
+    param_coarse_iter = args_multilevel.param_coarse_iter
+    physics = args_multilevel.physics
+    max_ML_steps = args_multilevel.max_ML_steps
+    coarse_physics = args_multilevel.coarse_physics
+    observations = args_multilevel.observations
+    information_transfer = copy.deepcopy(args_multilevel.information_transfer)
+    information_transfer._initialize_operator(xk, xk.shape[-3:])
+    observation = observations[f"level{levels+1}"]
+    physics = coarse_physics[f"level{levels+1}"]
+    coarse_observation = observations[f"level{levels}"]
+    coarse_physics = coarse_physics[f"level{levels}"]
+    param_reg_fine = param_regularization
+    param_reg_coarse = param_reg_fine / 4
+    """
+    Send information to the coarse level
+    """
+    if cst_grad is None:
+        cst_grad_fine = None
+    else:
+        cst_grad_fine = cst_grad.clone()
+    xk_coarse = information_transfer.to_coarse(xk, xk.shape[-3:])
+    print(f"Level {levels}, base case, xk_coarse shape: {xk_coarse.shape}, coarse_physics shape: {coarse_physics.mask.shape}")
+    cst_grad, coherence = compute_coherence(xk, xk_coarse, information_transfer, data_fidelity, grad_prior, cst_grad, physics, coarse_physics, observation, coarse_observation, param_reg_fine, param_reg_coarse)
+    coherence = step_size*coherence.to(device)
+    x0_coarse = xk_coarse.clone()
+    step_coarse = 1
+
+    """
+    Optimize at coarse level
+    """
+    with torch.no_grad():
+        for k in range(param_coarse_iter):
+            if levels > 1 and k < max_ML_steps:
+                print(f"Level {levels}, coarse iteration {k}, xk_coarse shape: {xk_coarse.shape}, coarse_physics shape: {coarse_physics.mask.shape}")
+                xk_coarse, _, _, _ = MultiLevel(xk_coarse, level_max, levels-1, args_multilevel, param_reg_coarse, cst_grad) # Recursive call if levels > 1
+            xk_coarse = xk_coarse -coherence \
+                - step_size*data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics) \
+                - step_size*grad_prior(xk_coarse, param_reg_coarse) # Coarse gradient descent
+
+    # Coarse correction
+    coarse_correction = xk_coarse - x0_coarse
+    coarse_correction = information_transfer.to_fine(coarse_correction, xk.shape[-3:])
+    xk, step_coarse = ML_linesearch(xk, level_max, levels+1, coarse_correction, cst_grad_fine, data_fidelity, observation, physics, grad_prior, denoiser, prior, param_reg_fine,  step_coarse*2)
+    # xk = xk + step_coarse* coarse_correction
+    # print(f"Step size at level {levels}: {step_coarse}")
+    return xk, [], [], []
+
 
 def MultiLevel(
     xk,
@@ -123,9 +192,9 @@ def MultiLevel(
                     x_true=x_true,
                     xk_finest=xk_finest,
                 )  # Recursive call if levels > 1
-                losses += losses_intermediate
+                '''losses += losses_intermediate
                 times += times_intermediate
-                psnr_list += psnrs_intermediate
+                psnr_list += psnrs_intermediate'''
 
             if isinstance(prior, dinv.optim.prior.PnP):
                 xk_coarse = prior.denoiser(
@@ -135,10 +204,10 @@ def MultiLevel(
                     * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics),
                     param_reg_coarse,
                 )
-                losses.append(data_fidelity(information_transfer.to_fine(xk_coarse, xk.shape[-3:]), observation, physics).item())
+                '''losses.append(data_fidelity(information_transfer.to_fine(xk_coarse, xk.shape[-3:]), observation, physics).item())
                 times.append(time.process_time())
                 if x_true is not None:
-                    psnr_list.append(PSNR(xk_fine, x_true).item())
+                    psnr_list.append(PSNR(xk_fine, x_true).item())'''
 
             else:
                 xk_coarse = (
@@ -149,16 +218,16 @@ def MultiLevel(
                     - step_size * grad_prior(xk_coarse, param_reg_coarse)
                 )  # Coarse gradient descent
 
-                observation_fine = observations[f"level{level_max}"]  # Fine observation
+                '''observation_fine = observations[f"level{level_max}"]  # Fine observation
                 diff = reconstruct_to_finest_level(xk_coarse-x0_coarse, levels, level_max, args_multilevel)
                 obj_fun = lambda x: data_fidelity(x, observation_fine, physics_fine).item() + param_reg_fine * prior.fn(x).item()
-                grad_obj_fun = lambda x: data_fidelity.grad(x, observation_fine, physics_fine)
+                grad_obj_fun = lambda x: data_fidelity.grad(x, observation_fine, physics_fine) + param_reg_fine * grad_prior(x, param_reg_fine)
                 xk_fine, tau = linesearch_armijo(xk_finest, diff, obj_fun, grad_obj_fun)
                 print(f'Loss at coarse iteration {k} (level {levels}): {data_fidelity(xk_fine, observation_fine, physics_fine).item() + param_reg_fine * prior.fn(xk_fine).item()}')
                 losses.append(data_fidelity(xk_fine, observation_fine, physics_fine).item() + param_reg_fine * prior.fn(xk_fine).item())
                 times.append(time.process_time())
                 if x_true is not None:
-                    psnr_list.append(PSNR(xk_fine, x_true).item())
+                    psnr_list.append(PSNR(xk_fine, x_true).item())'''
 
     # Coarse correction
     coarse_correction = xk_coarse - x0_coarse
