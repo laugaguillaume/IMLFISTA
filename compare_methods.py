@@ -410,37 +410,81 @@ def run_BCDcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fideli
 
     return recon, loss, times, psnr, cycles
 
+def run_GD_all_levels(x0, y=y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
+    xk = x0.clone().to(device)
+    param_regularization = params['reg_weight']
+
+    args_multilevel.prior = prior
+    args_multilevel.denoiser = denoiser
+
+    xk = MultiLevelWavelets(
+                        xk,
+                        levels,
+                        levels - 1,
+                        args_multilevel,
+                        param_regularization,
+                        cst_grad,
+                        device,
+                    )
+    
+    recon = xk.clone()
+    return recon, None, None, None, None
+
 def run_coarse_GD(x0, y=y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
+    xk = x0.clone().to(device)
+    coarsest_physics = coarse_physics[f'level{1}']
+    coarsest_observation = observations[f'level{1}']
+
+    xk_coeffs_np = pywt.wavedec2(xk.detach().numpy(), wavelet=params['wavelet'], level=params['J'], mode='periodization')
+    xk_coeffs = wavelet_numpy_to_torch(xk_coeffs_np)
+    approx = xk_coeffs[0].clone().to(device)
+
+    print(approx.shape, coarsest_observation.shape)
+
+    for k  in range(params['n_coarse_steps']):
+        approx = approx - params['stepsize'] * 0.01 * coarsest_physics.A_adjoint(approx) * (coarsest_physics.A(approx) - coarsest_observation)
+
+    xk_coeffs[0] = approx
+    xk = torch.from_numpy(pywt.waverec2(wavelet_torch_to_numpy(xk_coeffs), wavelet=params['wavelet'], mode='periodization'))
+
+    xk = denoiser_cond(xk)
+
+    return xk, None, None, None, None
+
+def run_coarse_GD_iter(x0, y=y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
     xk = x0.clone().to(device)
     n_iter=params['n_iter']
     n_iter_coarse = params['n_coarse_steps']
     coarsest_physics = coarse_physics[f'level{1}']
     coarsest_observation = observations[f'level{1}']
-    xk_coeffs_np = pywt.wavedec2(xk.detach().numpy(), wavelet=params['wavelet'], level=params['J'], mode='periodization')
-    xk_coeffs = wavelet_numpy_to_torch(xk_coeffs_np)
-    approx = xk_coeffs[0].clone().to(device)
-    dinv.utils.plot(approx)
 
-    print(approx.shape, coarsest_observation.shape)
+    with torch.no_grad():
+        with tqdm(range(n_iter), desc="Coarse GD") as t:
+            for k in t:
+                xk_coeffs_np = pywt.wavedec2(xk.detach().numpy(), wavelet=params['wavelet'], level=params['J'], mode='periodization')
+                xk_coeffs = wavelet_numpy_to_torch(xk_coeffs_np)
+                approx = xk_coeffs[0].clone().to(device)
 
-    for k  in range(n_iter_coarse):
-        approx = approx - params['stepsize'] * 0.01 * coarsest_physics.A_adjoint(approx) * (coarsest_physics.A(approx) - coarsest_observation)
-        dinv.utils.plot(approx)
+                for l  in range(n_iter_coarse):
+                    approx = approx - params['stepsize'] * 0.000001 * coarsest_physics.A_adjoint(approx) * (coarsest_physics.A(approx) - coarsest_observation)
+                
+                xk_coeffs[0] = approx
+                xk = torch.from_numpy(pywt.waverec2(wavelet_torch_to_numpy(xk_coeffs), wavelet=params['wavelet'], mode='periodization'))
+                xk = denoiser_cond(xk)
+    
+    recon = xk.clone()
+    return recon, None, None, None, None
 
-    xk_coeffs[0] = approx
-    xk = torch.from_numpy(pywt.waverec2(wavelet_torch_to_numpy(xk_coeffs), wavelet=params['wavelet'], mode='periodization'))
+recon_coarse_GD, _, _, _, _ = run_coarse_GD(x0=y)
+recon_GD_all, _, _, _, _ = run_GD_all_levels(x0=y)
+recon_coarse_GD_iter, _, _, _, _ = run_coarse_GD_iter(x0=y)
 
-
-    xk = denoiser_cond(xk)
-
-    dinv.utils.plot(xk)
-
-    return xk
+dinv.utils.plot([y, recon_coarse_GD, recon_GD_all, recon_coarse_GD_iter], titles=["Observation", "Coarse GD", "GD all levels", "Coarse GD Iter"])
 
 #recon_approx = run_coarse_GD(x0=y)
 
-'''import sys
-sys.exit()'''
+import sys
+sys.exit()
 
 
 #%%--- Run methods %%%---
