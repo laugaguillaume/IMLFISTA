@@ -47,7 +47,7 @@ prior_type = "L1_wavelet"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 2000
+n_iter = 1000
 reg_weight = 1e-1
 Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.05/Anorm2
@@ -58,7 +58,7 @@ filter = 'daubechies8'
 wv_type = 'db8'
 
 # For multilevel algorithms
-multilevel_iter = 5 # Number of multilevel iterations at the fine level
+multilevel_iter = int(0.1 * n_iter)  # Number of multilevel iterations at the fine level
 n_coarse_steps = 5  # Number of coarse steps per level in each multilevel iteration
 
 # For BCD algorithms
@@ -224,7 +224,8 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
                             param_regularization,
                             cst_grad_device,
                             device=device,
-                            x_true=x_true
+                            x_true=x_true,
+                            xk_finest=xk
                         )
                         loss += intermediate_losses
                         times += intermediate_times
@@ -405,15 +406,15 @@ def run_coarse_GD(x0, y=y, x_true=x_true, physics=physics, data_fidelity=data_fi
 
 recon_approx = run_coarse_GD(x0=y)
     
-import sys
-sys.exit()
+'''import sys
+sys.exit()'''
 
 #%%--- Run methods %%%---
 x0 = y.clone()
 
 methods = {
     "FB": run_FB,
-    #"MLFB": run_MLFB,
+    "MLFB": run_MLFB,
     #"BCD": run_BCD_MLFB,
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,

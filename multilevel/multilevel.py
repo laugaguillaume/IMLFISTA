@@ -37,6 +37,7 @@ def MultiLevel(
     cst_grad=None,
     device="cpu",
     x_true=None,
+    xk_finest=None,
 ):
     """
     Multilevel step for image reconstruction
@@ -73,6 +74,7 @@ def MultiLevel(
     coarse_physics = coarse_physics[f"level{levels}"]
     param_reg_fine = param_regularization
     losses, times, psnr_list = [], [], []
+    xk_finest = xk_finest.clone() if xk_finest is not None else None
     if isinstance(prior, dinv.optim.prior.PnP):
         param_reg_coarse = param_reg_fine
     else:
@@ -119,6 +121,7 @@ def MultiLevel(
                     param_reg_coarse,
                     cst_grad,
                     x_true=x_true,
+                    xk_finest=xk_finest,
                 )  # Recursive call if levels > 1
                 losses += losses_intermediate
                 times += times_intermediate
@@ -147,7 +150,10 @@ def MultiLevel(
                 )  # Coarse gradient descent
 
                 observation_fine = observations[f"level{level_max}"]  # Fine observation
-                xk_fine = reconstruct_to_finest_level(xk_coarse, levels, level_max, args_multilevel)
+                diff = reconstruct_to_finest_level(xk_coarse-x0_coarse, levels, level_max, args_multilevel)
+                obj_fun = lambda x: data_fidelity(x, observation_fine, physics_fine).item() + param_reg_fine * prior.fn(x).item()
+                grad_obj_fun = lambda x: data_fidelity.grad(x, observation_fine, physics_fine)
+                xk_fine, tau = linesearch_armijo(xk_finest, diff, obj_fun, grad_obj_fun)
                 print(f'Loss at coarse iteration {k} (level {levels}): {data_fidelity(xk_fine, observation_fine, physics_fine).item() + param_reg_fine * prior.fn(xk_fine).item()}')
                 losses.append(data_fidelity(xk_fine, observation_fine, physics_fine).item() + param_reg_fine * prior.fn(xk_fine).item())
                 times.append(time.process_time())
