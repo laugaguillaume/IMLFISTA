@@ -29,8 +29,8 @@ print(f"Using device: {device}")
 PSNR = dinv.metric.PSNR()
 
 # Ground truth
-x_true = dinv.utils.load_example("butterfly.png", device=device)
-#x_true = dinv.utils.load_image('pillars_of_creation.png', img_size=2048, device=device)
+#x_true = dinv.utils.load_example("butterfly.png", device=device)
+x_true = dinv.utils.load_image('pillars_of_creation.png', img_size=2048, device=device)
 
 #%%------ MODEL -----%%
 # Physics
@@ -113,6 +113,8 @@ wv_type = args_multilevel.information_transfer.wavelet_type
 coarse_physics = {f'level{levels}': physics}
 coarse_data = physics.mask.data.to(device)
 
+#dinv.utils.plot(physics.mask.data)
+
 for i in range(levels-1, 0, -1):
     coarse_data = args_multilevel.information_transfer.to_coarse(coarse_data, coarse_data.shape)
     coarse_physics[f'level{i}'] = dinv.physics.Inpainting(
@@ -120,6 +122,18 @@ for i in range(levels-1, 0, -1):
         mask=coarse_data,
         device=device
     )
+
+coarsest_physics = coarse_physics[f'level{1}']
+dinv.utils.plot(coarsest_physics.mask.data)
+
+x_true_coarse = wavelet_numpy_to_torch(pywt.wavedec2(x_true.detach().cpu().numpy(), wavelet=wv_type, level=J, mode='periodization'))[0].to(device)
+
+coarse_operator_norm = coarsest_physics.compute_norm(x_true_coarse).item()
+print(f'Fine level operator norm: {Anorm2}, coarsest level operator norm: {coarse_operator_norm}')
+
+'''mask_wavelet = pywt.wavedec2(physics.mask.data.cpu().numpy(), wavelet=wv_type, level=J, mode='periodization')
+mask_wavelet = wavelet_numpy_to_torch(mask_wavelet)
+dinv.utils.plot(mask_wavelet[1][0][0])'''
 
 args_multilevel.coarse_physics = coarse_physics
 
@@ -533,8 +547,8 @@ sys.exit()'''
 x0 = y.clone()
 
 methods = {
-    #"FB": run_FB,
-    #"MLFB": run_MLFB,
+    "FB": run_FB,
+    "MLFB": run_MLFB,
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
     #"MLFBcond": run_MLFBcond,
