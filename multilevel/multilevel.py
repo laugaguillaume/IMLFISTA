@@ -411,8 +411,14 @@ def MultiLevelWavelets(
                         - step_size
                         * data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics)
                     )
+                    # Check parameters
+                    '''print(f"Gradient step at coarse level {levels}, iteration {k}")
+                    print(f"Stepsize: {step_size}")
+                    print(f"Regularization parameter: {param_reg_coarse}")'''
+
                     # Old coefficients if we need to compare
                     LH_prev, HL_prev, HH_prev = LH.clone(), HL.clone(), HH.clone()
+
                     # Threshold the detail coefficients based on the reconstructed approximation
                     LH, HL, HH = conditional_thresholding(
                         {"LH": LH, "HL": HL, "HH": HH}, xk_coarse, global_threshold=param_reg_coarse
@@ -835,7 +841,7 @@ def conditional_thresholding(
     HH = details["HH"]
 
     # Wavelet transform of the approximation without downsampling
-    stationnary_transform = pywt.swt2(approx.cpu().numpy(), wavelet="sym8", level=1)
+    stationnary_transform = pywt.swt2(approx.cpu().numpy(), wavelet="db8", level=1)
     grad_LH, grad_HL, grad_HH = (
         stationnary_transform[0][1][0],
         stationnary_transform[0][1][1],

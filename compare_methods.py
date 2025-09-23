@@ -48,10 +48,10 @@ prior_type = "L1_wavelet"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 150
+n_iter = 500
 reg_weight = 1e-1
 Anorm2 = physics.compute_norm(x_true).item()
-stepsize = 0.1/Anorm2
+stepsize = 0.05/Anorm2
 
 J = 3         # Number of wavelet levels (2048/2^5 = 64)
 levels = J+1  # Same but the Multilevel function uses levels=J+1
@@ -219,6 +219,8 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
     param_gamma = params['stepsize']
     global biggest_multilevel_iter
 
+    stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
+
     with torch.no_grad():
         with tqdm(range(params['n_iter'])) as t:
             for k in t:
@@ -248,7 +250,7 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
                     stats.print_stats(20)  # Top 20 des fonctions les plus gourmandes'''
 
                     # Gradient step
-                    xk = xk - param_gamma * data_fidelity.grad(xk, y, physics)
+                    xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
 
                     # Proximal step
                     if isinstance(prior, dinv.optim.TVPrior):
@@ -278,6 +280,16 @@ def run_BCD_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidel
 
     n_iter_BCD = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFB', metrics=True)
+
+    return recon, loss, psnr, times, cycles
+
+def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
+
+    xk = x0.clone()
+    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
+
+    n_iter_BCD = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
+    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', metrics=True)
 
     return recon, loss, psnr, times, cycles
 
@@ -408,7 +420,7 @@ def run_BCDcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fideli
     n_iter_BCDcond = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCDcond, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFBcond', metrics=True)
 
-    return recon, loss, times, psnr, cycles
+    return recon, loss, psnr, times, cycles
 
 def run_GD_all_levels(x0, y=y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
     xk = x0.clone().to(device)
@@ -426,7 +438,7 @@ def run_GD_all_levels(x0, y=y, x_true=x_true, physics=physics, data_fidelity=dat
                         cst_grad,
                         device,
                     )
-    
+
     recon = xk.clone()
     return recon, None, None, None, None
 
@@ -442,7 +454,7 @@ def run_coarse_GD(x0, y=y, x_true=x_true, physics=physics, data_fidelity=data_fi
     print(approx.shape, coarsest_observation.shape)
 
     for k  in range(params['n_coarse_steps']):
-        approx = approx - params['stepsize'] * 0.01 * coarsest_physics.A_adjoint(approx) * (coarsest_physics.A(approx) - coarsest_observation)
+        approx = approx - params['stepsize'] * coarsest_physics.A_adjoint(approx) * (coarsest_physics.A(approx) - coarsest_observation)
 
     xk_coeffs[0] = approx
     xk = torch.from_numpy(pywt.waverec2(wavelet_torch_to_numpy(xk_coeffs), wavelet=params['wavelet'], mode='periodization'))
@@ -466,38 +478,69 @@ def run_coarse_GD_iter(x0, y=y, x_true=x_true, physics=physics, data_fidelity=da
                 approx = xk_coeffs[0].clone().to(device)
 
                 for l  in range(n_iter_coarse):
-                    approx = approx - params['stepsize'] * 0.000001 * coarsest_physics.A_adjoint(approx) * (coarsest_physics.A(approx) - coarsest_observation)
-                
+                    approx = approx - params['stepsize'] * coarsest_physics.A_adjoint(approx) * (coarsest_physics.A(approx) - coarsest_observation)
+
                 xk_coeffs[0] = approx
                 xk = torch.from_numpy(pywt.waverec2(wavelet_torch_to_numpy(xk_coeffs), wavelet=params['wavelet'], mode='periodization'))
                 xk = denoiser_cond(xk)
-    
+
     recon = xk.clone()
     return recon, None, None, None, None
+'''
+results = {}
+params['n_coarse_steps'] = 20
+args_multilevel.param_coarse_iter = params['n_coarse_steps']
 
-recon_coarse_GD, _, _, _, _ = run_coarse_GD(x0=y)
-recon_GD_all, _, _, _, _ = run_GD_all_levels(x0=y)
-recon_coarse_GD_iter, _, _, _, _ = run_coarse_GD_iter(x0=y)
+alpha = 1e-3
+params['stepsize'] = alpha / Anorm2
+args_multilevel.step_size = torch.tensor(params['stepsize'])
+for param_regularization in [1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5]:
+    params['reg_weight'] = param_regularization
+    print(f"Running with regularization weight: {param_regularization}")
 
-dinv.utils.plot([y, recon_coarse_GD, recon_GD_all, recon_coarse_GD_iter], titles=["Observation", "Coarse GD", "GD all levels", "Coarse GD Iter"])
+    # on stocke les deux reconstructions
+    recon_coarse_GD, _, _, _, _ = run_coarse_GD(x0=y)
+    psnr_coarse_GD = PSNR(recon_coarse_GD, x_true).item()
+    #recon_GD_all, _, _, _, _ = run_GD_all_levels(x0=y)
+    #psnr_GD_all = PSNR(recon_GD_all, x_true).item()
+
+    results[param_regularization] = {
+        "coarse_GD": recon_coarse_GD,
+        #"GD_all": recon_GD_all,
+        "PSNR_coarse_GD": psnr_coarse_GD,
+        #"PSNR_GD_all": psnr_GD_all
+    }
+
+#recon_coarse_GD_iter, _, _, _, _ = run_coarse_GD_iter(x0=y)
+
+for param_regularization, recons_dict in results.items():
+    titles = [
+        "Ground truth",
+        f"Observation (PSNR={PSNR(y, x_true).item():.2f} dB)",
+        f"Coarse GD (reg={param_regularization}, PSNR={recons_dict['PSNR_coarse_GD']:.2f})",
+        #f"GD all levels (reg={param_regularization}, PSNR={recons_dict['PSNR_GD_all']:.2f})"
+    ]
+
+    dinv.utils.plot([x_true, y, recons_dict["coarse_GD"]], titles=titles, suptitle=f"Regularization weight: {param_regularization}, n_iter_coarse={params['n_coarse_steps']}, stepsize={alpha}/L", cmap="gray", save_fn=os.path.join(exp_dir, f"coarse_GD_vs_GD_all_reg{param_regularization}.pdf"), tight=True)
 
 #recon_approx = run_coarse_GD(x0=y)
 
 import sys
-sys.exit()
+sys.exit()'''
 
 
 #%%--- Run methods %%%---
 x0 = y.clone()
 
 methods = {
-    "FB": run_FB,
-    "MLFB": run_MLFB,
-    "BCD": run_BCD_MLFB,
+    #"FB": run_FB,
+    #"MLFB": run_MLFB,
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
-    "MLFBcond": run_MLFBcond,
-    "BCDcond": run_BCDcond
+    #"MLFBcond": run_MLFBcond,
+    "BCD": run_BCD_MLFB,
+    "BCDcyclic": run_BCD_cyclic,
+    "BCDcond": run_BCDcond,
 }
 
 results = {}
@@ -528,7 +571,8 @@ method_colors = {
     "PnP": "C1",     # Orange
     "MLPnP": "C1",   # Orange
     "MLFBcond": "C2", # Vert
-    "BCDcond": "C2"   # Vert
+    "BCDcond": "C2",  # Vert
+    "BCDcyclic": "C3" # Rouge
 }
 
 # Définir les styles de ligne
@@ -539,13 +583,15 @@ method_linestyles = {
     "PnP": "-",          # Ligne pleine
     "MLPnP": "--",       # Tirets
     "MLFBcond": "--",    # Tirets
-    "BCDcond": "-."      # Point-tiret
+    "BCDcond": "-.",      # Point-tiret
+    "BCDcyclic": "-."     # Point-tiret
 }
 
 # Définir les marqueurs pour les cycles
 method_markers = {
-    "BCD": "x",
-    "BCDcond": "o"
+    "BCD": "o",
+    "BCDcond": "o",
+    "BCDcyclic": "o"
 }
 
 # Créer une figure avec 4 sous-graphiques côte à côte
@@ -648,6 +694,8 @@ axes[3].set_ylabel('PSNR (dB)')
 axes[3].set_title('PSNR over CPU Time')
 axes[3].legend(frameon=True)
 axes[3].grid(True)
+
+plt.savefig(os.path.join(exp_dir, f"all_plots_combined.pdf"), dpi=300, bbox_inches='tight')
 
 # Save each plot individually
 plot_names = ['loss_vs_iterations', 'loss_vs_time', 'psnr_vs_iterations', 'psnr_vs_time']
