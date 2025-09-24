@@ -156,11 +156,12 @@ class BlockCoordinateDescent():
         # Update list is a list of tuples (level, mode) where mode is 'approx' or 'details'
 
         x_img = self.reconstruct_image(x_wavelet)
-        y_wavelet = self.img_to_wavelet(y)
 
         grad = self.data_fidelity.grad(x_img, y, self.physics)
         grad_wavelet = self.img_to_wavelet(grad)
 
+        '''
+        y_wavelet = self.img_to_wavelet(y)
         approx = x_wavelet[0]
         APiVTa = self.physics.A(self.reconstruct_image(self.proj.project_adjoint(approx, mode="approx", level=0)))
 
@@ -179,13 +180,14 @@ class BlockCoordinateDescent():
 
         #print("Coherence shape :", grad_proj.shape)
         #print("Coherence norm :", torch.norm(grad_proj_img))
+        '''
 
         for level, mode in updated_blocks:
             if mode == 'approx':
                 coeff = self.proj.project(x_wavelet, mode, level=0)
                 for i in range(n_iter_coarse):
                     coeff = coeff - self.stepsize * self.proj.project(grad_wavelet, mode, level=0)
-                    coeff = self.prior.prox(coeff, gamma=reg_weight*self.stepsize)
+                    #coeff = self.prior.prox(coeff, gamma=reg_weight*self.stepsize)
                     x_wavelet[0] = coeff
 
                     self.current_iter += 1
@@ -197,6 +199,7 @@ class BlockCoordinateDescent():
                 for i in range(n_iter_coarse):
                     for c in range(3):
                         coeff[c] = coeff[c] - self.stepsize * self.proj.project(grad_wavelet, mode, level=level)[c]
+                        #print("In BCD FB, reg_weight * self.stepsize =", reg_weight * self.stepsize)
                         coeff[c] = self.prior.prox(coeff[c], gamma=reg_weight * self.stepsize)
                         x_wavelet[level + 1][c] = coeff[c]
 
@@ -212,6 +215,8 @@ class BlockCoordinateDescent():
         self.reg_weight = reg_weight
         self.y = y
         self.x_true = x_true
+
+        self.stepsizeATy = self.stepsize * self.physics.A_adjoint(self.y)
 
         self.losses = []
         self.times = []

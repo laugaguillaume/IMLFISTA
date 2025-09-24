@@ -29,8 +29,8 @@ print(f"Using device: {device}")
 PSNR = dinv.metric.PSNR()
 
 # Ground truth
-#x_true = dinv.utils.load_example("butterfly.png", device=device)
-x_true = dinv.utils.load_image('pillars_of_creation.png', img_size=2048, device=device)
+x_true = dinv.utils.load_example("butterfly.png", device=device)
+#x_true = dinv.utils.load_image('pillars_of_creation.png', img_size=2048, device=device)
 
 #%%------ MODEL -----%%
 # Physics
@@ -44,11 +44,11 @@ y = physics(x_true)
 
 # Objective function
 data_fidelity = dinv.optim.L2()
-prior_type = "L1_wavelet"  # "TV", "L1", "L1_wavelet"
+prior_type = "TV"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 500
+n_iter = 600
 reg_weight = 1e-1
 Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.05/Anorm2
@@ -198,10 +198,12 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
 
     xk = x0.clone().to(device)
+    #print('FB regularization parameter: ', params['reg_weight'])
     with torch.no_grad():
         with tqdm(range(params['n_iter']), desc="FB") as t:
             for k in t:
                 xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
+                #print("Stepsize * gamma = ", params['reg_weight'] * params['stepsize'])
                 xk = prior.prox(xk, gamma=params['stepsize'] * params['reg_weight'])
 
                 if x_true is not None:
@@ -287,20 +289,22 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
     cycles = None
     return recon, loss, psnr, times, cycles
 
-def run_BCD_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
+def run_BCD_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
+    prior_l1 = dinv.optim.L1Prior()
 
     xk = x0.clone()
-    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
+    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
     n_iter_BCD = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFB', metrics=True)
 
     return recon, loss, psnr, times, cycles
 
-def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
+def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
+    prior_l1 = dinv.optim.L1Prior()
 
     xk = x0.clone()
-    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
+    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
     n_iter_BCD = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', metrics=True)
@@ -427,12 +431,26 @@ def run_MLFBcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidel
     cycles = None
     return recon, loss, psnr, times, cycles
 
-def run_BCDcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
-    xk = x0.clone()
-    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
+def run_BCDcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
+    prior_l1 = dinv.optim.L1Prior()
 
-    n_iter_BCDcond = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
+    xk = x0.clone()
+
+    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
+
+    n_iter_BCDcond = int(params['n_iter'] / (params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCDcond, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFBcond', metrics=True)
+
+    return recon, loss, psnr, times, cycles
+
+def run_BCD_FB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
+    prior_l1 = dinv.optim.L1Prior()
+    xk = x0.clone()
+    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
+
+    print('BCD FB regularization parameter:', params['reg_weight'])
+    n_iter_BCDcond = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
+    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCDcond, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='FB', metrics=True)
 
     return recon, loss, psnr, times, cycles
 
@@ -552,9 +570,10 @@ methods = {
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
     #"MLFBcond": run_MLFBcond,
-    "BCD": run_BCD_MLFB,
-    "BCDcyclic": run_BCD_cyclic,
-    "BCDcond": run_BCDcond,
+    #"BCD": run_BCD_MLFB,
+    #"BCD_FB": run_BCD_FB,
+    #"BCDcyclic": run_BCD_cyclic,
+    #"BCDcond": run_BCDcond,
 }
 
 results = {}
@@ -568,7 +587,8 @@ for method_name, method_func in methods.items():
         "loss": loss,
         "psnr": psnr,
         "times": times,
-        "cycles": cycles
+        "cycles": None
+        #"cycles": cycles
     }
     if psnr:
         print(f"Final PSNR for {method_name}: {psnr[-1]:.2f} dB")
@@ -586,7 +606,8 @@ method_colors = {
     "MLPnP": "C1",   # Orange
     "MLFBcond": "C2", # Vert
     "BCDcond": "C2",  # Vert
-    "BCDcyclic": "C3" # Rouge
+    "BCDcyclic": "C3", # Rouge
+    "BCD_FB": "C0"   # Bleu
 }
 
 # Définir les styles de ligne
@@ -597,15 +618,17 @@ method_linestyles = {
     "PnP": "-",          # Ligne pleine
     "MLPnP": "--",       # Tirets
     "MLFBcond": "--",    # Tirets
-    "BCDcond": "-.",      # Point-tiret
-    "BCDcyclic": "-."     # Point-tiret
+    "BCDcond": "-.",     # Point-tiret
+    "BCDcyclic": "-.",   # Point-tiret
+    "BCD_FB": "-."       # Point-tiret
 }
 
 # Définir les marqueurs pour les cycles
 method_markers = {
     "BCD": "o",
     "BCDcond": "o",
-    "BCDcyclic": "o"
+    "BCDcyclic": "o",
+    "BCD_FB": "o"
 }
 
 # Créer une figure avec 4 sous-graphiques côte à côte
