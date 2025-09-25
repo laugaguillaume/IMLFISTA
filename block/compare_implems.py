@@ -33,11 +33,14 @@ wv_type = 'haar'
 # Physics
 sigma = 0.01
 noise_model = dinv.physics.GaussianNoise(sigma=sigma)
-physics = dinv.physics.Inpainting(tensor_size=x_true.shape[1:], mask=0.7, device=device, noise_model=noise_model)
+filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
+physics = dinv.physics.Blur(filter_0, device=device, padding='reflect', noise_model=noise_model)
+#physics = dinv.physics.Inpainting(tensor_size=x_true.shape[1:], mask=0.7, device=device, noise_model=noise_model)
 seed = torch.manual_seed(0)  # Random seed for reproducibility
 
 # Observation
 y = physics(x_true)
+print(x_true.shape, y.shape)
 
 dinv.utils.plot([x_true, y], titles=['Original', 'Observation'], cmap='gray')
 

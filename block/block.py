@@ -23,87 +23,6 @@ PSNR = dinv.metric.PSNR()
 from block.utils import wavelet_numpy_to_torch, wavelet_torch_to_numpy
 from multilevel.utils import WaveletPriorCustom
 
-class Projection():
-
-    def __init__(self, image_size, wv_type, num_levels, device='cpu'):
-        self.image_size = image_size
-        self.wv_type = wv_type
-        self.num_levels = num_levels
-        self.device = device
-
-    def project(self, coeffs, mode, level=0):
-        if mode == 'details':
-            return coeffs[level + 1]
-        elif mode == 'approx':
-            return coeffs[0]
-        else:
-            raise ValueError("Invalid mode. Choose 'details' or 'approx'.")
-
-    def project_adjoint(self, coeff, mode, level):
-        # Coeff : one approximation coefficient tensor or one detail coefficient tuple (tuple of 3 detail tensors)
-        zero = np.zeros(self.image_size)
-        coeffs_zero = pywt.wavedec2(zero, self.wv_type, level=self.num_levels)
-        coeffs_zero = wavelet_numpy_to_torch(coeffs_zero, device=self.device)
-
-        # Convert tuple to list for mutability
-        coeffs_zero = list(coeffs_zero)
-
-        if mode == 'approx':
-            coeffs_zero[0] = coeff
-        elif mode == 'details':
-            coeffs_zero[level + 1] = coeff
-        else:
-            raise ValueError("Invalid mode. Choose 'details' or 'approx'.")
-
-        #coeffs_recon = wavelet_numpy_to_torch(pywt.wavedec2(zero, self.wv_type, level=self.num_levels))
-
-        return coeffs_zero
-
-class UpdateList():
-    def __init__(self, max_levels):
-        self.max_levels = max_levels
-
-    def get_list(self, type='MLFB'):
-        if type == 'MLFB':
-            return self.create_update_list_MLFB()
-        elif type == 'FB':
-            return self.create_update_list_FB()
-        elif type == 'MLFBcond':
-            return self.create_update_list_MLFBcond()
-        elif type == 'cyclic':
-            return self.create_update_list_cyclic()
-        else:
-            raise ValueError("Invalid type. Choose 'MLFB', 'FB', 'MLFBcond' or 'cyclic'.")
-
-    def create_update_list_MLFB(self):
-        update_list = [[(0, 'approx')]]
-        updated_blocks = [(0, 'approx')]
-        for i in range(self.max_levels):
-            updated_blocks.append((i, 'details'))
-            update_list.append(copy.deepcopy(updated_blocks))
-        return update_list
-
-    def create_update_list_FB(self):
-        update_list = []
-        updated_blocks = [(0, 'approx')] + [(level, 'details') for level in range(self.max_levels)]
-        update_list = [copy.deepcopy(updated_blocks) for _ in range(self.max_levels)]
-        return update_list
-
-    def create_update_list_MLFBcond(self):
-        update_list = [[(0, 'approx')]]
-        updated_blocks = [(0, 'approx')]
-        for i in range(self.max_levels):
-            updated_blocks.append((i, 'details'))
-            update_list.append(copy.deepcopy(updated_blocks))
-            update_list.append([(i, 'details')])
-        return update_list
-
-    def create_update_list_cyclic(self):
-        update_list = [[(0, 'approx')]]
-        for i in range(self.max_levels):
-            update_list.append([(i, 'details')])
-        return update_list
-
 class BlockCoordinateDescent():
     def __init__(self, img_size, wv_type, physics, data_fidelity, prior, max_levels, stepsize=1e-3, device='cpu'):
         self.img_size = img_size
@@ -123,25 +42,6 @@ class BlockCoordinateDescent():
         #self.wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device=self.device)
         self.wavelet_prior = WaveletPriorCustom(level=self.max_levels, wv=self.wv_type, device=self.device)
         self.proj = Projection(self.img_size, self.wv_type, self.max_levels, device=self.device)
-
-    def reconstruct_image(self, coeffs):
-        """Reconstruct image from wavelet coefficients"""
-        coeffs_np = wavelet_torch_to_numpy(coeffs)
-        x = pywt.waverec2(coeffs_np, self.wv_type)
-        return torch.tensor(x, dtype=torch.float32, device=self.device)
-
-    def img_to_wavelet(self, x):
-        """Convert image to wavelet coefficients"""
-        coeffs = pywt.wavedec2(x.cpu().numpy(), self.wv_type, level=self.max_levels)
-        return wavelet_numpy_to_torch(coeffs, device=self.device)
-
-    def compute_metrics(self, x_wavelet, x_img=None):
-        if x_img is None:
-            x_img = self.reconstruct_image(x_wavelet)
-        crit = self.data_fidelity.fn(x_img, self.y, self.physics).item() + self.reg_weight * self.wavelet_prior.fn(x_img).item()
-        self.losses.append(crit)
-        self.times.append(time.process_time())
-        self.psnrs.append(PSNR(x_img, self.x_true).item())
 
     def initialize_stored_terms(self, x_wavelet, y):
         """Initialize stored gradient terms: A^T A Pi_i^* coeff_i for each block"""
@@ -393,7 +293,6 @@ class BlockCoordinateDescent():
             return x_recon, self.losses, self.times, self.cycles, self.psnrs
         return x_recon
 
-
     def FB(self, y, num_iterations, reg_weight, metrics=False):
         # Wavelet prior to compute the objective function values AND to use in the proximal step
         wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device=self.device)
@@ -418,6 +317,108 @@ class BlockCoordinateDescent():
         if metrics:
             return xk, loss, times, psnrs
         return xk
+
+    def reconstruct_image(self, coeffs):
+        """Reconstruct image from wavelet coefficients"""
+        coeffs_np = wavelet_torch_to_numpy(coeffs)
+        x = pywt.waverec2(coeffs_np, self.wv_type)
+        return torch.tensor(x, dtype=torch.float32, device=self.device)
+
+    def img_to_wavelet(self, x):
+        """Convert image to wavelet coefficients"""
+        coeffs = pywt.wavedec2(x.cpu().numpy(), self.wv_type, level=self.max_levels)
+        return wavelet_numpy_to_torch(coeffs, device=self.device)
+
+    def compute_metrics(self, x_wavelet, x_img=None):
+        if x_img is None:
+            x_img = self.reconstruct_image(x_wavelet)
+        crit = self.data_fidelity.fn(x_img, self.y, self.physics).item() + self.reg_weight * self.wavelet_prior.fn(x_img).item()
+        self.losses.append(crit)
+        self.times.append(time.process_time())
+        self.psnrs.append(PSNR(x_img, self.x_true).item())
+
+
+class Projection():
+
+    def __init__(self, image_size, wv_type, num_levels, device='cpu'):
+        self.image_size = image_size
+        self.wv_type = wv_type
+        self.num_levels = num_levels
+        self.device = device
+
+    def project(self, coeffs, mode, level=0):
+        if mode == 'details':
+            return coeffs[level + 1]
+        elif mode == 'approx':
+            return coeffs[0]
+        else:
+            raise ValueError("Invalid mode. Choose 'details' or 'approx'.")
+
+    def project_adjoint(self, coeff, mode, level):
+        # Coeff : one approximation coefficient tensor or one detail coefficient tuple (tuple of 3 detail tensors)
+        zero = np.zeros(self.image_size)
+        coeffs_zero = pywt.wavedec2(zero, self.wv_type, level=self.num_levels)
+        coeffs_zero = wavelet_numpy_to_torch(coeffs_zero, device=self.device)
+
+        # Convert tuple to list for mutability
+        coeffs_zero = list(coeffs_zero)
+
+        if mode == 'approx':
+            coeffs_zero[0] = coeff
+        elif mode == 'details':
+            coeffs_zero[level + 1] = coeff
+        else:
+            raise ValueError("Invalid mode. Choose 'details' or 'approx'.")
+
+        #coeffs_recon = wavelet_numpy_to_torch(pywt.wavedec2(zero, self.wv_type, level=self.num_levels))
+
+        return coeffs_zero
+
+
+class UpdateList():
+    def __init__(self, max_levels):
+        self.max_levels = max_levels
+
+    def get_list(self, type='MLFB'):
+        if type == 'MLFB':
+            return self.create_update_list_MLFB()
+        elif type == 'FB':
+            return self.create_update_list_FB()
+        elif type == 'MLFBcond':
+            return self.create_update_list_MLFBcond()
+        elif type == 'cyclic':
+            return self.create_update_list_cyclic()
+        else:
+            raise ValueError("Invalid type. Choose 'MLFB', 'FB', 'MLFBcond' or 'cyclic'.")
+
+    def create_update_list_MLFB(self):
+        update_list = [[(0, 'approx')]]
+        updated_blocks = [(0, 'approx')]
+        for i in range(self.max_levels):
+            updated_blocks.append((i, 'details'))
+            update_list.append(copy.deepcopy(updated_blocks))
+        return update_list
+
+    def create_update_list_FB(self):
+        update_list = []
+        updated_blocks = [(0, 'approx')] + [(level, 'details') for level in range(self.max_levels)]
+        update_list = [copy.deepcopy(updated_blocks) for _ in range(self.max_levels)]
+        return update_list
+
+    def create_update_list_MLFBcond(self):
+        update_list = [[(0, 'approx')]]
+        updated_blocks = [(0, 'approx')]
+        for i in range(self.max_levels):
+            updated_blocks.append((i, 'details'))
+            update_list.append(copy.deepcopy(updated_blocks))
+            update_list.append([(i, 'details')])
+        return update_list
+
+    def create_update_list_cyclic(self):
+        update_list = [[(0, 'approx')]]
+        for i in range(self.max_levels):
+            update_list.append([(i, 'details')])
+        return update_list
 
 
 if __name__ == "__main__":
