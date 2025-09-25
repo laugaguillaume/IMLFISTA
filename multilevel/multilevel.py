@@ -25,7 +25,7 @@ from deepinv.models import Denoiser
 
 PSNR = dinv.metric.PSNR()
 
-from multilevel.utils import nabla, local_average, get_approximation_previous_scale, comparative_plot_wavelets
+from multilevel.utils import nabla, local_average, get_approximation_previous_scale, comparative_plot_wavelets, WaveletPriorCustom
 
 def MultiLevel2(xk, level_max, levels, args_multilevel, param_regularization, cst_grad=None, device='cpu', x_true=None, xk_finest=None):
     """
@@ -611,7 +611,7 @@ class Residual(nn.Module):
             self.l12prior = dinv.optim.L12Prior()
 
     def forward(self, x, gamma):
-        if isinstance(self.prior, dinv.optim.prior.PnP):
+        if isinstance(self.prior, dinv.optim.prior.PnP) or isinstance(self.prior, WaveletPriorCustom):
             return x - self.denoiser(x, gamma)
         if isinstance(self.prior, dinv.optim.TVPrior):
             Dx = self.prior.nabla(

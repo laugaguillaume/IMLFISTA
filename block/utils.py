@@ -22,16 +22,9 @@ def wavelet_torch_to_numpy(coeffs):
     # Convert detail coefficients to the proper PyWavelets format
     details_np = []
     for detail in details_torch:
-        if isinstance(detail, torch.Tensor) and len(detail.shape) >= 1 and detail.shape[0] == 3:
-            # If detail has shape [3, ...], convert to tuple of 3 arrays
-            detail_np = detail.detach().cpu().numpy()
-            detail_tuple = (detail_np[0], detail_np[1], detail_np[2])
-            details_np.append(detail_tuple)
-        else:
-            # If detail is already in the right format or different structure
-            detail_np = detail.detach().cpu().numpy()
-            details_np.append(detail_np)
-
+        # If detail has shape [3, ...], convert to tuple of 3 arrays
+        detail_tuple = (detail[0].detach().cpu().numpy(), detail[1].detach().cpu().numpy(), detail[2].detach().cpu().numpy())
+        details_np.append(detail_tuple)
     return (approx_np, *details_np)
 
 def wavelet_numpy_to_torch(coeffs, device='cpu'):

@@ -16,6 +16,7 @@ from block.block import BlockCoordinateDescent
 from block.utils import wavelet_numpy_to_torch, wavelet_torch_to_numpy
 from multilevel.multilevel import ParametersMultilevel, MultiLevel, MultiLevelWavelets, WaveletDenoiserConditional
 from multilevel.multilevel_initialization import ml_init_pnp
+from multilevel.utils import WaveletPriorCustom
 
 # Plot settings
 sns.set_theme()
@@ -44,22 +45,22 @@ y = physics(x_true)
 
 # Objective function
 data_fidelity = dinv.optim.L2()
-prior_type = "TV"  # "TV", "L1", "L1_wavelet"
+prior_type = "L1_wavelet"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 600
-reg_weight = 1e-1
+n_iter = 100
+reg_weight = 0.5
 Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.05/Anorm2
 
-J = 3         # Number of wavelet levels (2048/2^5 = 64)
+J = 5         # Number of wavelet levels (2048/2^5 = 64)
 levels = J+1  # Same but the Multilevel function uses levels=J+1
 filter = 'daubechies8'
 wv_type = 'db8'
 
 # For multilevel algorithms
-multilevel_iter = 5 #int(0.1 * n_iter)  # Number of multilevel iterations at the fine level
+multilevel_iter = 10 #int(0.1 * n_iter)  # Number of multilevel iterations at the fine level
 n_coarse_steps = 5  # Number of coarse steps per level in each multilevel iteration
 
 # For BCD algorithms
@@ -82,11 +83,13 @@ elif prior_type == "TV":
     prior = dinv.optim.TVPrior(n_it_max=50)
     denoiser = prior.prox
 elif prior_type == "L1_wavelet":
-    prior = dinv.optim.WaveletPrior(level=J, wv=wv_type, p=1, device=device)
+    #prior = dinv.optim.WaveletPrior(level=J, wv=wv_type, p=1, device=device)
+    prior = WaveletPriorCustom(level=J, wv=wv_type, p=1, device=device)
     denoiser = prior.prox
 
 # Block coordinate descent setup
-bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize)
+prior_l1 = dinv.optim.L1Prior()
+bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
 # Multilevel parameters
 cst_grad = None
@@ -124,7 +127,7 @@ for i in range(levels-1, 0, -1):
     )
 
 coarsest_physics = coarse_physics[f'level{1}']
-dinv.utils.plot(coarsest_physics.mask.data)
+#dinv.utils.plot(coarsest_physics.mask.data)
 
 x_true_coarse = wavelet_numpy_to_torch(pywt.wavedec2(x_true.detach().cpu().numpy(), wavelet=wv_type, level=J, mode='periodization'))[0].to(device)
 
@@ -269,7 +272,7 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
                     xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
 
                     # Proximal step
-                    if isinstance(prior, dinv.optim.TVPrior):
+                    if isinstance(prior, dinv.optim.TVPrior) or isinstance(prior, WaveletPriorCustom):
                         xk = prior.prox(xk, gamma=param_gamma * param_regularization)
                     else:
                         xk = prior.prox(xk, gamma=[param_gamma * param_regularization])
@@ -566,12 +569,12 @@ x0 = y.clone()
 
 methods = {
     "FB": run_FB,
-    "MLFB": run_MLFB,
+    #"MLFB": run_MLFB,
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
     #"MLFBcond": run_MLFBcond,
     #"BCD": run_BCD_MLFB,
-    #"BCD_FB": run_BCD_FB,
+    "BCD_FB": run_BCD_FB,
     #"BCDcyclic": run_BCD_cyclic,
     #"BCDcond": run_BCDcond,
 }

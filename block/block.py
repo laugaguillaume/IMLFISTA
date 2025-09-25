@@ -21,19 +21,7 @@ colors = sns.color_palette("colorblind")
 PSNR = dinv.metric.PSNR()
 
 from block.utils import wavelet_numpy_to_torch, wavelet_torch_to_numpy
-
-# A faire:
-# - Ajouter plusieurs itérations sur chaque bloc avant de passer au suivant.
-# - Comparer : itérations, temps de calcul, PSNR
-# - Implémenter clair tous les algos, les comparer, identifier limitations
-# Guillaume, blocs avec différents epsilon, celui de paulo (aj, dj, dj-1, ...) (sans le lambda qui dépend de a)
-# Bien tracer la fonction objectif à chaque VRAIE itérations
-# Guillaume
-# aj, aj dj, aj dj dj-1
-# aj, dj, dj-1 (Paulo par blocs)
-# GD à toutes échelles + D_sigma
-# GD coarse + D_sigma
-# Paramètre : nombre de cycles, mettre un point rouge à chaque changement de cycle !
+from multilevel.utils import WaveletPriorCustom
 
 class Projection():
 
@@ -130,7 +118,10 @@ class BlockCoordinateDescent():
         self.reg_weight = None
         self.y = None
 
-        self.wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device=self.device)
+        self.stored_gradient_terms = None
+
+        #self.wavelet_prior = dinv.optim.WaveletPrior(level=self.max_levels, wv=self.wv_type, device=self.device)
+        self.wavelet_prior = WaveletPriorCustom(level=self.max_levels, wv=self.wv_type, device=self.device)
         self.proj = Projection(self.img_size, self.wv_type, self.max_levels, device=self.device)
 
     def reconstruct_image(self, coeffs):
@@ -152,13 +143,163 @@ class BlockCoordinateDescent():
         self.times.append(time.process_time())
         self.psnrs.append(PSNR(x_img, self.x_true).item())
 
+    def initialize_stored_terms(self, x_wavelet, y):
+        """Initialize stored gradient terms: A^T A Pi_i^* coeff_i for each block"""
+        self.stored_gradient_terms = {}
+
+        # Constant term - A^T y
+        self.stored_constant = - self.physics.A_adjoint(y)
+
+        # Approximation
+        approx_contribution = self.physics.A_adjoint(
+            self.physics.A(self.reconstruct_image(
+                self.proj.project_adjoint(x_wavelet[0], mode="approx", level=0)
+            ))
+        )
+        self.stored_gradient_terms['approx'] = approx_contribution
+
+        # For each detail
+        for level in range(self.max_levels):
+            detail_contribution = self.physics.A_adjoint(
+                self.physics.A(self.reconstruct_image(
+                    self.proj.project_adjoint(x_wavelet[level+1], 'details', level=level)
+                ))
+            )
+            self.stored_gradient_terms[f'details_{level}'] = detail_contribution
+
+    def update_stored_gradient_efficiently(self, old_coeff, new_coeff, mode, level):
+        if mode == 'approx':
+            key = 'approx'
+            coeff_diff = new_coeff - old_coeff
+            diff_img = self.reconstruct_image(
+                self.proj.project_adjoint(coeff_diff, mode='approx', level=0)
+            )
+
+            diff_contribution = self.physics.A_adjoint(self.physics.A(diff_img))
+
+            self.stored_gradient_terms[key] += diff_contribution
+
+        elif mode == 'details':
+            key = f'details_{level}'
+            coeff_diff = tuple(new_coeff[i] - old_coeff[i] for i in range(3))
+
+            diff_coeffs = self.proj.project_adjoint(coeff_diff, mode, level)
+            diff_img = self.reconstruct_image(diff_coeffs)
+
+            diff_contribution = self.physics.A_adjoint(self.physics.A(diff_img))
+
+            self.stored_gradient_terms[key] += diff_contribution
+
+    def get_efficient_gradient(self):
+        # Total gradient : sum of stored terms + constant term
+        grad_img = self.stored_constant.clone()
+        for term in self.stored_gradient_terms.values():
+            grad_img += term
+
+        return self.img_to_wavelet(grad_img)
+
+    def update_blocks_optimized(self, x_wavelet, y, n_iter_coarse, updated_blocks, reg_weight):
+        if self.stored_gradient_terms is None:
+            self.initialize_stored_terms(x_wavelet, y)
+
+        for level, mode in updated_blocks:
+            if mode == 'approx':
+                old_coeff = x_wavelet[0].clone()
+                coeff = old_coeff.clone()
+
+                for i in range(n_iter_coarse):
+                    grad_wavelet = self.get_efficient_gradient()
+                    grad_proj = self.proj.project(grad_wavelet, mode, level=0)
+
+                    # Gradient step
+                    new_coeff = coeff - self.stepsize * grad_proj
+
+                    self.update_stored_gradient_efficiently(coeff, new_coeff, mode, 0)
+
+                    coeff = new_coeff
+                    x_wavelet[0] = coeff
+
+                    self.current_iter += 1
+                    self.compute_metrics(x_wavelet)
+
+            elif mode == 'details':
+                old_coeff = tuple(x_wavelet[level + 1][c].clone() for c in range(3))
+                coeff = list(old_coeff)
+
+                for i in range(n_iter_coarse):
+                    # Calcule le gradient efficacement
+                    grad_wavelet = self.get_efficient_gradient()
+                    grad_proj = self.proj.project(grad_wavelet, mode, level)
+
+                    # Met à jour chaque orientation
+                    new_coeff = []
+                    for c in range(3):
+                        new_c = coeff[c] - self.stepsize * grad_proj[c]
+                        new_c = self.prior.prox(new_c, gamma=reg_weight * self.stepsize)
+                        new_coeff.append(new_c)
+                        x_wavelet[level + 1][c] = new_c
+
+                    # Met à jour les termes stockés
+                    self.update_stored_gradient_efficiently(
+                        tuple(coeff), tuple(new_coeff), mode, level
+                    )
+
+                    coeff = new_coeff
+
+                    self.current_iter += 1
+                    self.compute_metrics(x_wavelet)
+
+        return x_wavelet
+
+    def run_optimized(self, y, x0, x_true, n_iter, n_iter_coarse, reg_weight, update_mode='MLFB', metrics=False):
+        self.reg_weight = reg_weight
+        self.y = y
+        self.x_true = x_true
+
+        self.stepsizeATy = self.stepsize * self.physics.A_adjoint(self.y)
+
+        self.losses = []
+        self.times = []
+        self.psnrs = []
+        self.current_iter = 0
+        self.cycles = []
+
+        xk_wavelet = self.img_to_wavelet(x0)
+
+        # Update list
+        update_list = UpdateList(self.max_levels).get_list(type=update_mode)
+
+        if metrics:
+            start = time.process_time()
+
+        with torch.no_grad():
+            with tqdm(range(n_iter), desc=f"BCD {update_mode}") as t:
+                for it in t:
+                    if metrics:
+                        x_recon = self.reconstruct_image(xk_wavelet)
+                        t.set_postfix_str(f"loss={self.data_fidelity.fn(x_recon, y, self.physics).item() + self.reg_weight * self.wavelet_prior.fn(x_recon).item():.2f}")
+
+                    # Update detail coefficients from coarse to fine
+                    for updated_blocks in update_list:
+                        xk_wavelet = self.update_blocks_optimized(
+                            xk_wavelet, y, n_iter_coarse, updated_blocks, reg_weight
+                        )
+                    self.cycles.append(self.current_iter)
+
+        x_recon = self.reconstruct_image(xk_wavelet)
+
+        if metrics:
+            self.times = [t - start for t in self.times]  # Start at 0
+            return x_recon, self.losses, self.times, self.cycles, self.psnrs
+        return x_recon
+
     def update_blocks(self, x_wavelet, y, n_iter_coarse, updated_blocks, reg_weight):
         # Update list is a list of tuples (level, mode) where mode is 'approx' or 'details'
 
         x_img = self.reconstruct_image(x_wavelet)
 
         grad = self.data_fidelity.grad(x_img, y, self.physics)
-        grad_wavelet = self.img_to_wavelet(grad)
+        self.grad_wavelet = self.img_to_wavelet(grad)
 
         '''
         y_wavelet = self.img_to_wavelet(y)
@@ -186,7 +327,7 @@ class BlockCoordinateDescent():
             if mode == 'approx':
                 coeff = self.proj.project(x_wavelet, mode, level=0)
                 for i in range(n_iter_coarse):
-                    coeff = coeff - self.stepsize * self.proj.project(grad_wavelet, mode, level=0)
+                    coeff = coeff - self.stepsize * self.proj.project(self.grad_wavelet, mode, level=0)
                     #coeff = self.prior.prox(coeff, gamma=reg_weight*self.stepsize)
                     x_wavelet[0] = coeff
 
@@ -198,7 +339,8 @@ class BlockCoordinateDescent():
 
                 for i in range(n_iter_coarse):
                     for c in range(3):
-                        coeff[c] = coeff[c] - self.stepsize * self.proj.project(grad_wavelet, mode, level=level)[c]
+                        coeff[c] = coeff[c] - self.stepsize * self.proj.project(self.grad_wavelet, mode, level=level)[c]
+                        #print(f"Using {self.prior} as prior")
                         #print("In BCD FB, reg_weight * self.stepsize =", reg_weight * self.stepsize)
                         coeff[c] = self.prior.prox(coeff[c], gamma=reg_weight * self.stepsize)
                         x_wavelet[level + 1][c] = coeff[c]
@@ -237,7 +379,7 @@ class BlockCoordinateDescent():
                 for it in t:
                     if metrics:
                         x_recon = self.reconstruct_image(xk_wavelet)
-                        t.set_postfix_str(f"loss={self.data_fidelity.fn(x_recon, y, self.physics).item():.2f}")
+                        t.set_postfix_str(f"loss={self.data_fidelity.fn(x_recon, y, self.physics).item() + self.reg_weight * self.wavelet_prior.fn(x_recon).item():.2f}")
 
                     # Update detail coefficients from coarse to fine
                     for updated_blocks in update_list:
