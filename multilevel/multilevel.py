@@ -836,9 +836,14 @@ def conditional_thresholding(
 
     l1_prior = dinv.optim.L1Prior()
 
-    LH = details["LH"]
-    HL = details["HL"]
-    HH = details["HH"]
+    if isinstance(details, dict):
+        LH = details["LH"]
+        HL = details["HL"]
+        HH = details["HH"]
+    elif isinstance(details, torch.Tensor):
+        LH, HL, HH = details[0], details[1], details[2]
+    else:
+        raise ValueError("Format de 'details' inattendu")
 
     # Wavelet transform of the approximation without downsampling
     stationnary_transform = pywt.swt2(approx.cpu().numpy(), wavelet="db8", level=1)

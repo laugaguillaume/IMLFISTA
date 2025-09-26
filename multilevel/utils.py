@@ -206,7 +206,6 @@ class WaveletPriorCustom(dinv.optim.WaveletPrior):
 
     def prox(self, x, gamma=1):
         prior_l1 = dinv.optim.L1Prior()
-        print("Gamma is ", gamma)
 
         x_np = x.cpu().numpy()
         coeffs = pywt.wavedec2(x_np, wavelet=self.wv, level=self.level, mode='periodization')

@@ -49,12 +49,12 @@ prior_type = "L1_wavelet"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 100
-reg_weight = 0.5
+n_iter = 1000
+reg_weight = 0.1
 Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.05/Anorm2
 
-J = 5         # Number of wavelet levels (2048/2^5 = 64)
+J = 3         # Number of wavelet levels
 levels = J+1  # Same but the Multilevel function uses levels=J+1
 filter = 'daubechies8'
 wv_type = 'db8'
@@ -83,7 +83,7 @@ elif prior_type == "TV":
     prior = dinv.optim.TVPrior(n_it_max=50)
     denoiser = prior.prox
 elif prior_type == "L1_wavelet":
-    #prior = dinv.optim.WaveletPrior(level=J, wv=wv_type, p=1, device=device)
+    #prior = dinv.optim.WaveletPrior(level=J, wv=wv_type, p=1, mode='periodic', device=device)
     prior = WaveletPriorCustom(level=J, wv=wv_type, p=1, device=device)
     denoiser = prior.prox
 
@@ -201,12 +201,10 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
 
     xk = x0.clone().to(device)
-    #print('FB regularization parameter: ', params['reg_weight'])
     with torch.no_grad():
         with tqdm(range(params['n_iter']), desc="FB") as t:
             for k in t:
                 xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
-                #print("Stepsize * gamma = ", params['reg_weight'] * params['stepsize'])
                 xk = prior.prox(xk, gamma=params['stepsize'] * params['reg_weight'])
 
                 if x_true is not None:
@@ -457,6 +455,17 @@ def run_BCD_FB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelit
 
     return recon, loss, psnr, times, cycles
 
+def run_BCD_cyclic_cond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
+    prior_l1 = dinv.optim.L1Prior()
+    xk = x0.clone()
+    bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
+
+    print('BCD FB regularization parameter:', params['reg_weight'])
+    n_iter_BCDcond = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
+    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCDcond, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', use_conditional_thresholding=True, metrics=True)
+
+    return recon, loss, psnr, times, cycles
+
 def run_GD_all_levels(x0, y=y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
     xk = x0.clone().to(device)
     param_regularization = params['reg_weight']
@@ -573,10 +582,11 @@ methods = {
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
     #"MLFBcond": run_MLFBcond,
-    #"BCD": run_BCD_MLFB,
-    "BCD_FB": run_BCD_FB,
+    #"BCD_MLFB": run_BCD_MLFB,
+    #"BCD_FB": run_BCD_FB,
     #"BCDcyclic": run_BCD_cyclic,
     #"BCDcond": run_BCDcond,
+    "BCDcyclic_cond": run_BCD_cyclic_cond
 }
 
 results = {}
@@ -602,36 +612,39 @@ for method_name, method_func in methods.items():
 
 # Définir les couleurs par groupe de méthodes
 method_colors = {
-    "FB": "C0",      # Bleu
-    "MLFB": "C0",    # Bleu
-    "BCD": "C0",     # Bleu
-    "PnP": "C1",     # Orange
-    "MLPnP": "C1",   # Orange
-    "MLFBcond": "C2", # Vert
-    "BCDcond": "C2",  # Vert
-    "BCDcyclic": "C3", # Rouge
-    "BCD_FB": "C0"   # Bleu
+    "FB": colors[0],             # Bleu
+    "MLFB": colors[0],           # Bleu
+    "BCD_MLFB": colors[4],       # Jaune
+    "PnP": colors[1],            # Orange
+    "MLPnP": colors[1],          # Orange
+    "MLFBcond": colors[2],       # Vert
+    "BCDcond": colors[2],        # Vert
+    "BCDcyclic": colors[3],      # Rouge
+    "BCD_FB": colors[0],         # Bleu
+    "BCDcyclic_cond": colors[2], # Vert
 }
 
 # Définir les styles de ligne
 method_linestyles = {
-    "FB": "-",           # Ligne pleine
-    "MLFB": "--",        # Tirets
-    "BCD": "-.",         # Point-tiret
-    "PnP": "-",          # Ligne pleine
-    "MLPnP": "--",       # Tirets
-    "MLFBcond": "--",    # Tirets
-    "BCDcond": "-.",     # Point-tiret
-    "BCDcyclic": "-.",   # Point-tiret
-    "BCD_FB": "-."       # Point-tiret
+    "FB": "-",             # Ligne pleine
+    "MLFB": "--",          # Tirets
+    "BCD_MLFB": "-.",           # Point-tiret
+    "PnP": "-",            # Ligne pleine
+    "MLPnP": "--",         # Tirets
+    "MLFBcond": "--",      # Tirets
+    "BCDcond": "-.",       # Point-tiret
+    "BCDcyclic": "-.",     # Point-tiret
+    "BCD_FB": "-.",        # Point-tiret
+    "BCDcyclic_cond": "-." # Point-tiret
 }
 
 # Définir les marqueurs pour les cycles
 method_markers = {
-    "BCD": "o",
+    "BCD_MLFB": "o",
     "BCDcond": "o",
     "BCDcyclic": "o",
-    "BCD_FB": "o"
+    "BCD_FB": "o",
+    "BCDcyclic_cond": "o"
 }
 
 # Créer une figure avec 4 sous-graphiques côte à côte
