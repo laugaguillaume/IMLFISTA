@@ -299,6 +299,11 @@ def run_BCD_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidel
     n_iter_BCD = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFB', metrics=True)
 
+    # Uncomment this block to only keep the values at the end of each cycle
+    '''loss = [loss[index-1] for index in cycles]
+    psnr = [psnr[index-1] for index in cycles]
+    times = [times[index-1] for index in cycles]'''
+
     return recon, loss, psnr, times, cycles
 
 def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
@@ -309,6 +314,11 @@ def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fid
 
     n_iter_BCD = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', metrics=True)
+
+    # Uncomment this block to only keep the values at the end of each cycle
+    '''loss = [loss[index-1] for index in cycles]
+    psnr = [psnr[index-1] for index in cycles]
+    times = [times[index-1] for index in cycles]'''
 
     return recon, loss, psnr, times, cycles
 
@@ -442,6 +452,11 @@ def run_BCDcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fideli
     n_iter_BCDcond = int(params['n_iter'] / (params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCDcond, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFBcond', metrics=True)
 
+    # Uncomment this block to only keep the values at the end of each cycle
+    '''loss = [loss[index-1] for index in cycles]
+    psnr = [psnr[index-1] for index in cycles]
+    times = [times[index-1] for index in cycles]'''
+
     return recon, loss, psnr, times, cycles
 
 def run_BCD_FB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
@@ -453,6 +468,11 @@ def run_BCD_FB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelit
     n_iter_BCDcond = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCDcond, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='FB', metrics=True)
 
+    # Uncomment this block to only keep the values at the end of each cycle
+    '''loss = [loss[index-1] for index in cycles]
+    psnr = [psnr[index-1] for index in cycles]
+    times = [times[index-1] for index in cycles]'''
+
     return recon, loss, psnr, times, cycles
 
 def run_BCD_cyclic_cond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
@@ -463,6 +483,11 @@ def run_BCD_cyclic_cond(x0, y, x_true=x_true, physics=physics, data_fidelity=dat
     print('BCD FB regularization parameter:', params['reg_weight'])
     n_iter_BCDcond = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCDcond, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', use_conditional_thresholding=True, metrics=True)
+
+    # Uncomment this block to only keep the values at the end of each cycle
+    '''loss = [loss[index-1] for index in cycles]
+    psnr = [psnr[index-1] for index in cycles]
+    times = [times[index-1] for index in cycles]'''
 
     return recon, loss, psnr, times, cycles
 
@@ -582,11 +607,11 @@ methods = {
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
     #"MLFBcond": run_MLFBcond,
-    #"BCD_MLFB": run_BCD_MLFB,
+    "BCD_MLFB": run_BCD_MLFB,
     #"BCD_FB": run_BCD_FB,
     #"BCDcyclic": run_BCD_cyclic,
     #"BCDcond": run_BCDcond,
-    "BCDcyclic_cond": run_BCD_cyclic_cond
+    #"BCDcyclic_cond": run_BCD_cyclic_cond
 }
 
 results = {}

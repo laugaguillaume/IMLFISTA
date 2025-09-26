@@ -215,7 +215,7 @@ class Projection():
     def project_adjoint(self, coeff, mode, level):
         # Coeff : one approximation coefficient tensor or one detail coefficient tuple (tuple of 3 detail tensors)
         zero = np.zeros(self.image_size)
-        coeffs_zero = pywt.wavedec2(zero, self.wv_type, level=self.num_levels)
+        coeffs_zero = pywt.wavedec2(zero, self.wv_type, level=self.num_levels, mode='periodization')
         coeffs_zero = wavelet_numpy_to_torch(coeffs_zero, device=self.device)
 
         # Convert tuple to list for mutability
