@@ -116,6 +116,8 @@ class BlockCoordinateDescent():
         self.y = y
         self.x_true = x_true
 
+        print(f"BCD FB Initial PSNR in run method: {PSNR(x0, x_true).item()}")
+
         self.stepsizeATy = self.stepsize * self.physics.A_adjoint(self.y)
 
         self.losses = []
@@ -126,8 +128,12 @@ class BlockCoordinateDescent():
 
         xk_wavelet = self.img_to_wavelet(x0)
 
+        self.compute_metrics(x_wavelet=None, x_img=x0)
+        print(self.psnrs)
+
         # Update list
         update_list = UpdateList(self.max_levels).get_list(type=update_mode)
+        print(f"Update list ({update_mode}): {update_list}")
 
         if metrics:
             start = time.process_time()
@@ -516,6 +522,12 @@ if __name__ == "__main__":
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior, max_levels=J, stepsize=stepsize, device=device)
 
     x0 = y.clone()
+
+    for update_mode in ['FB', 'MLFB', 'cyclic', 'MLFBcond']:
+        bcd.run(y, x0, x_true=x_true, n_iter=10, n_iter_coarse=5, reg_weight=reg_weight, update_mode=update_mode, metrics=False)
+
+    import sys
+    sys.exit()
 
     print("Running BCD cond...")
     x_recon_cond, loss_cond, times_cond, cycles_cond, psnr_cond = bcd.run(y, x0, x_true=x_true, n_iter=n_iter, n_iter_coarse=10, reg_weight=reg_weight, update_mode='MLFBcond', metrics=True)

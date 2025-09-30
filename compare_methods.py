@@ -31,6 +31,7 @@ PSNR = dinv.metric.PSNR()
 
 # Ground truth
 x_true = dinv.utils.load_example("butterfly.png", device=device)
+print(x_true.shape)
 #x_true = dinv.utils.load_image('pillars_of_creation.png', img_size=2048, device=device)
 
 #%%------ MODEL -----%%
@@ -49,7 +50,7 @@ prior_type = "L1_wavelet"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 1000
+n_iter = 600
 reg_weight = 0.1
 Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.05/Anorm2
@@ -90,6 +91,8 @@ elif prior_type == "L1_wavelet":
 # Block coordinate descent setup
 prior_l1 = dinv.optim.L1Prior()
 bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
+#n_iter_BCD = n_iter
+n_iter_BCD = int(n_iter/(n_coarse_steps*J))  # To have roughly the same number of fine updates as other methods
 
 # Multilevel parameters
 cst_grad = None
@@ -193,7 +196,11 @@ biggest_multilevel_iter = 0
 
 #%%%--- Reconstruction %%%---
 
+only_cycles = True  # Whether to only keep the values at the end of each cycle for BCD methods
+
 def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
+
+    print(f"FB initial PSNR: {PSNR(x0, x_true).item()}")
 
     loss, psnr, times = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], [0]
     start = time.process_time()
@@ -207,16 +214,19 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
                 xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
                 xk = prior.prox(xk, gamma=params['stepsize'] * params['reg_weight'])
 
-                if x_true is not None:
-                    current_psnr = PSNR(xk, x_true).item()
-                    psnr.append(current_psnr)
-                current_loss =  data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
-                t.set_postfix(loss=f"{current_loss:.4f}")
-                loss.append(current_loss)
-                times.append(time.process_time() - start)
+                if k % (n_coarse_steps*J) == 0:
+                    print(k)
+                    if x_true is not None:
+                        current_psnr = PSNR(xk, x_true).item()
+                        psnr.append(current_psnr)
+                    current_loss =  data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
+                    t.set_postfix(loss=f"{current_loss:.4f}")
+                    loss.append(current_loss)
+                    times.append(time.process_time() - start)
 
     recon = xk.clone()
     cycles = None
+    print(len(loss))
     return recon, loss, psnr, times, cycles
 
 def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params, args_multilevel=args_multilevel):
@@ -296,13 +306,13 @@ def run_BCD_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidel
     xk = x0.clone()
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
-    n_iter_BCD = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFB', metrics=True)
 
-    # Uncomment this block to only keep the values at the end of each cycle
-    '''loss = [loss[index-1] for index in cycles]
-    psnr = [psnr[index-1] for index in cycles]
-    times = [times[index-1] for index in cycles]'''
+    # To only keep the values at the end of each cycle
+    if only_cycles == True:
+        loss = [loss[index-1] for index in cycles]
+        psnr = [psnr[index-1] for index in cycles]
+        times = [times[index-1] for index in cycles]
 
     return recon, loss, psnr, times, cycles
 
@@ -312,13 +322,13 @@ def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fid
     xk = x0.clone()
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
-    n_iter_BCD = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', metrics=True)
 
-    # Uncomment this block to only keep the values at the end of each cycle
-    '''loss = [loss[index-1] for index in cycles]
-    psnr = [psnr[index-1] for index in cycles]
-    times = [times[index-1] for index in cycles]'''
+    # To only keep the values at the end of each cycle
+    if only_cycles == True:
+        loss = [loss[index-1] for index in cycles]
+        psnr = [psnr[index-1] for index in cycles]
+        times = [times[index-1] for index in cycles]
 
     return recon, loss, psnr, times, cycles
 
@@ -449,30 +459,34 @@ def run_BCDcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fideli
 
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
-    n_iter_BCDcond = int(params['n_iter'] / (params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
-    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCDcond, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFBcond', metrics=True)
+    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFBcond', metrics=True)
 
-    # Uncomment this block to only keep the values at the end of each cycle
-    '''loss = [loss[index-1] for index in cycles]
-    psnr = [psnr[index-1] for index in cycles]
-    times = [times[index-1] for index in cycles]'''
+    # To only keep the values at the end of each cycle
+    if only_cycles == True:
+        loss = [loss[index-1] for index in cycles]
+        psnr = [psnr[index-1] for index in cycles]
+        times = [times[index-1] for index in cycles]
 
     return recon, loss, psnr, times, cycles
 
 def run_BCD_FB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
+    print("BCD FB initial PSNR: ", PSNR(x0, x_true).item())
+
     prior_l1 = dinv.optim.L1Prior()
     xk = x0.clone()
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
-    print('BCD FB regularization parameter:', params['reg_weight'])
-    n_iter_BCDcond = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
-    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCDcond, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='FB', metrics=True)
+    recon, loss, times, cycles, psnr = bcd.run(y=y, x0=xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='FB', metrics=True)
 
-    # Uncomment this block to only keep the values at the end of each cycle
-    '''loss = [loss[index-1] for index in cycles]
-    psnr = [psnr[index-1] for index in cycles]
-    times = [times[index-1] for index in cycles]'''
+    cycles = [1] + cycles
 
+    # To only keep the values at the end of each cycle
+    if only_cycles == True:
+        loss = [loss[index-1] for index in cycles]
+        psnr = [psnr[index-1] for index in cycles]
+        times = [times[index-1] for index in cycles]
+
+    print(psnr[0])
     return recon, loss, psnr, times, cycles
 
 def run_BCD_cyclic_cond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
@@ -480,14 +494,13 @@ def run_BCD_cyclic_cond(x0, y, x_true=x_true, physics=physics, data_fidelity=dat
     xk = x0.clone()
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
-    print('BCD FB regularization parameter:', params['reg_weight'])
-    n_iter_BCDcond = int(params['n_iter']/(params['n_coarse_steps']*params['J']))  # To have roughly the same number of fine updates as other methods
-    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCDcond, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', use_conditional_thresholding=True, metrics=True)
+    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', use_conditional_thresholding=True, metrics=True)
 
-    # Uncomment this block to only keep the values at the end of each cycle
-    '''loss = [loss[index-1] for index in cycles]
-    psnr = [psnr[index-1] for index in cycles]
-    times = [times[index-1] for index in cycles]'''
+    # To only keep the values at the end of each cycle
+    if only_cycles == True:
+        loss = [loss[index-1] for index in cycles]
+        psnr = [psnr[index-1] for index in cycles]
+        times = [times[index-1] for index in cycles]
 
     return recon, loss, psnr, times, cycles
 
@@ -555,6 +568,7 @@ def run_coarse_GD_iter(x0, y=y, x_true=x_true, physics=physics, data_fidelity=da
 
     recon = xk.clone()
     return recon, None, None, None, None
+
 '''
 results = {}
 params['n_coarse_steps'] = 20
@@ -599,7 +613,6 @@ sys.exit()'''
 
 
 #%%--- Run methods %%%---
-x0 = y.clone()
 
 methods = {
     "FB": run_FB,
@@ -607,8 +620,8 @@ methods = {
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
     #"MLFBcond": run_MLFBcond,
-    "BCD_MLFB": run_BCD_MLFB,
-    #"BCD_FB": run_BCD_FB,
+    "BCD_FB": run_BCD_FB,
+    #"BCD_MLFB": run_BCD_MLFB,
     #"BCDcyclic": run_BCD_cyclic,
     #"BCDcond": run_BCDcond,
     #"BCDcyclic_cond": run_BCD_cyclic_cond
@@ -616,6 +629,7 @@ methods = {
 
 results = {}
 for method_name, method_func in methods.items():
+    x0 = y.clone()
     print(f"Running {method_name}...")
     params['update_mode'] = method_name
     x_rec, loss, psnr, times, cycles = method_func(x0, y, x_true=x_true)
@@ -625,8 +639,7 @@ for method_name, method_func in methods.items():
         "loss": loss,
         "psnr": psnr,
         "times": times,
-        "cycles": None
-        #"cycles": cycles
+        "cycles": cycles if not only_cycles else None
     }
     if psnr:
         print(f"Final PSNR for {method_name}: {psnr[-1]:.2f} dB")
@@ -810,26 +823,25 @@ for i, plot_name in enumerate(plot_names):
 
 # Plot the reconstructions together
 images = [x_true, y]
-titles = ["Original"]
-
-obs_psnr = PSNR(y, x_true).item()
-titles.append(f"Observation \nPSNR={obs_psnr:.2f} dB")
+titles = ["Original", "Observation"]
+subtitles = ["PSNR:", f"{PSNR(y, x_true).item():.2f} dB"]
 
 for method_name, res in results.items():
     x_rec = res["reconstruction"]
     psnr = res["psnr"]
     if x_rec is not None:
         images.append(x_rec)
+        titles.append(f"{method_name}")
         if psnr:
-            titles.append(f"{method_name} (PSNR={psnr[-1]:.2f} dB)")
-        else:
-            titles.append(f"{method_name} (No PSNR)")
+            subtitles.append(f"{psnr[-1]:.2f} dB")
     else:
         print(f"No reconstruction for {method_name}")
 
 dinv.utils.plot(
     images,
     titles=titles,
+    subtitles=subtitles,
     cmap="gray",
+    tight=False,
     save_fn=os.path.join(exp_dir, "all_reconstructions.pdf")
 )
