@@ -116,8 +116,6 @@ class BlockCoordinateDescent():
         self.y = y
         self.x_true = x_true
 
-        print(f"BCD FB Initial PSNR in run method: {PSNR(x0, x_true).item()}")
-
         self.stepsizeATy = self.stepsize * self.physics.A_adjoint(self.y)
 
         self.losses = []
@@ -129,11 +127,9 @@ class BlockCoordinateDescent():
         xk_wavelet = self.img_to_wavelet(x0)
 
         self.compute_metrics(x_wavelet=None, x_img=x0)
-        print(self.psnrs)
 
         # Update list
         update_list = UpdateList(self.max_levels).get_list(type=update_mode)
-        print(f"Update list ({update_mode}): {update_list}")
 
         if metrics:
             start = time.process_time()
@@ -266,16 +262,16 @@ class UpdateList():
     def create_update_list_FB(self):
         update_list = []
         updated_blocks = [(0, 'approx')] + [(level, 'details') for level in range(self.max_levels)]
-        update_list = [copy.deepcopy(updated_blocks) for _ in range(self.max_levels)]
+        update_list = [copy.deepcopy(updated_blocks)]
         return update_list
 
     def create_update_list_MLFBcond(self):
         update_list = [[(0, 'approx')]]
         updated_blocks = [(0, 'approx')]
         for i in range(self.max_levels):
+            update_list.append([(i, 'details')])
             updated_blocks.append((i, 'details'))
             update_list.append(copy.deepcopy(updated_blocks))
-            update_list.append([(i, 'details')])
         return update_list
 
     def create_update_list_cyclic(self):

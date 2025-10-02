@@ -1,3 +1,9 @@
+# TODO: - fix problem of total num_iter in BCD methods
+#       - Save plots FB vs BCD FB and MLFB vs BCD MLFB
+#       - Optimize code (avoid recomputing gradients etc)
+#       - Optimize code (efficiently compute A_H)
+
+
 import os
 import platform
 import json
@@ -199,10 +205,12 @@ biggest_multilevel_iter = 0
 only_cycles = True  # Whether to only keep the values at the end of each cycle for BCD methods
 
 def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
-
-    print(f"FB initial PSNR: {PSNR(x0, x_true).item()}")
+    only_cycles = False
 
     loss, psnr, times = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], [0]
+    n = x0.shape[-1] * x0.shape[-2]
+    filter_size = 8  # for db8
+    cost = [n**3 + n**2]
     start = time.process_time()
 
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
@@ -211,23 +219,44 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
     with torch.no_grad():
         with tqdm(range(params['n_iter']), desc="FB") as t:
             for k in t:
+                cost.append(cost[-1] + n**2 + n*filter_size**2 + n)
                 xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
                 xk = prior.prox(xk, gamma=params['stepsize'] * params['reg_weight'])
 
-                if k % (n_coarse_steps*J) == 0:
-                    print(k)
+                if only_cycles:
+                    if k % (n_coarse_steps*J) == 0:
+                        if x_true is not None:
+                            current_psnr = PSNR(xk, x_true).item()
+                            psnr.append(current_psnr)
+                        current_loss =  data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
+                        t.set_postfix(loss=f"{current_loss:.4f}")
+                        loss.append(current_loss)
+                        times.append(time.process_time() - start)
+                else:
+                    current_loss_val = data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
+                    loss.extend([current_loss_val] * 1)
+
                     if x_true is not None:
-                        current_psnr = PSNR(xk, x_true).item()
-                        psnr.append(current_psnr)
-                    current_loss =  data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
-                    t.set_postfix(loss=f"{current_loss:.4f}")
-                    loss.append(current_loss)
-                    times.append(time.process_time() - start)
+                        current_psnr_val = PSNR(xk, x_true).item()
+                        psnr.extend([current_psnr_val] * 1)
+
+                    current_time_val = time.process_time() - start
+                    times.extend([current_time_val] * 1)
+
+
+    # --- Plot ---
+    plt.figure(figsize=(6,4))
+    plt.plot(cost, loss)
+    plt.xlabel("Coût (opérations)")
+    plt.ylabel("Loss")
+    plt.title("Loss en fonction du coût")
+    plt.grid(True)
+    plt.show()
 
     recon = xk.clone()
     cycles = None
     print(len(loss))
-    return recon, loss, psnr, times, cycles
+    return recon, loss, psnr, times, cycles, cost
 
 def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params, args_multilevel=args_multilevel):
 
@@ -302,11 +331,15 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
 
 def run_BCD_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
     prior_l1 = dinv.optim.L1Prior()
+    len_cycle = J+1
+    n_cycles = int(params['n_iter'] / (len_cycle * params['n_coarse_steps'] * (params['J'] + 1)))
 
     xk = x0.clone()
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
-    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFB', metrics=True)
+    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_cycles, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFB', metrics=True)
+
+    cycles = [1] + cycles
 
     # To only keep the values at the end of each cycle
     if only_cycles == True:
@@ -317,12 +350,25 @@ def run_BCD_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidel
     return recon, loss, psnr, times, cycles
 
 def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
+    only_cycles = True
     prior_l1 = dinv.optim.L1Prior()
+    len_cycle = J+1
+    n_cycles=40
+    #n_cycles = int(params['n_iter'] / (len_cycle * params['n_coarse_steps'] * (params['J'] + 1)))
+
+    n = x0.shape[-1] * x0.shape[-2]
 
     xk = x0.clone()
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
-    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', metrics=True)
+    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_cycles, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', metrics=True)
+
+    cost = [n**3 + n**2 + ((2/(3*4**J) +1/3))*n**2 + (2/(3*4**J) +1/3)*n**3 + (1/4**(2*J) + (1-1/4**J)**2/9 + (2*(1-1/4**J))/(3*4**J))*n**3]
+    cost += [cost[0] + k*((1/4**(2*J) + (1-1/4**J)**2/9 + (2*(1-1/4**J)/(3*4**J)))*n**2 + (2/(3*4**J) + 1/3)*n ) for k in range(1, len(cycles)+1)]
+
+    cycles = [1] + cycles
+
+    print(len(cost))
 
     # To only keep the values at the end of each cycle
     if only_cycles == True:
@@ -330,7 +376,17 @@ def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fid
         psnr = [psnr[index-1] for index in cycles]
         times = [times[index-1] for index in cycles]
 
-    return recon, loss, psnr, times, cycles
+    print(len(loss))
+
+    plt.figure(figsize=(6,4))
+    plt.plot(cost, loss)
+    plt.xlabel("Coût (opérations)")
+    plt.ylabel("Loss")
+    plt.title("Loss en fonction du coût")
+    plt.grid(True)
+    plt.show()
+
+    return recon, loss, psnr, times, cycles, cost
 
 def run_PnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
 
@@ -454,12 +510,16 @@ def run_MLFBcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidel
 
 def run_BCDcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
     prior_l1 = dinv.optim.L1Prior()
+    len_cycle = 2*J+1
+    n_cycles = int(params['n_iter'] / (len_cycle * params['n_coarse_steps'] * (params['J'] + 1)))
 
     xk = x0.clone()
 
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
-    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFBcond', metrics=True)
+    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_cycles, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='MLFBcond', metrics=True)
+
+    cycles = [1] + cycles
 
     # To only keep the values at the end of each cycle
     if only_cycles == True:
@@ -470,13 +530,15 @@ def run_BCDcond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fideli
     return recon, loss, psnr, times, cycles
 
 def run_BCD_FB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
-    print("BCD FB initial PSNR: ", PSNR(x0, x_true).item())
 
     prior_l1 = dinv.optim.L1Prior()
+    len_cycle = J+1
+    n_cycles = int(params['n_iter'] / (len_cycle * params['n_coarse_steps'] * (params['J'] + 1)))
+
     xk = x0.clone()
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
-    recon, loss, times, cycles, psnr = bcd.run(y=y, x0=xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='FB', metrics=True)
+    recon, loss, times, cycles, psnr = bcd.run(y=y, x0=xk, x_true=x_true, n_iter=n_cycles, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='FB', metrics=True)
 
     cycles = [1] + cycles
 
@@ -486,15 +548,20 @@ def run_BCD_FB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelit
         psnr = [psnr[index-1] for index in cycles]
         times = [times[index-1] for index in cycles]
 
-    print(psnr[0])
+    print(len(loss))
     return recon, loss, psnr, times, cycles
 
 def run_BCD_cyclic_cond(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
     prior_l1 = dinv.optim.L1Prior()
+    len_cycle = J+1
+    n_cycles = int(params['n_iter'] / (len_cycle * params['n_coarse_steps'] * (params['J'] + 1)))
+
     xk = x0.clone()
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
-    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_iter_BCD, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', use_conditional_thresholding=True, metrics=True)
+    recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_cycles, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', use_conditional_thresholding=True, metrics=True)
+
+    cycles = [1] + cycles
 
     # To only keep the values at the end of each cycle
     if only_cycles == True:
@@ -620,9 +687,9 @@ methods = {
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
     #"MLFBcond": run_MLFBcond,
-    "BCD_FB": run_BCD_FB,
+    #"BCD_FB": run_BCD_FB,
     #"BCD_MLFB": run_BCD_MLFB,
-    #"BCDcyclic": run_BCD_cyclic,
+    "BCDcyclic": run_BCD_cyclic,
     #"BCDcond": run_BCDcond,
     #"BCDcyclic_cond": run_BCD_cyclic_cond
 }
@@ -632,14 +699,15 @@ for method_name, method_func in methods.items():
     x0 = y.clone()
     print(f"Running {method_name}...")
     params['update_mode'] = method_name
-    x_rec, loss, psnr, times, cycles = method_func(x0, y, x_true=x_true)
+    x_rec, loss, psnr, times, cycles, cost = method_func(x0, y, x_true=x_true)
     print("Method: ", method_name, " Loss: ", len(loss) if loss is not None else 'No loss', " PSNR: ", len(psnr), " Times: ", len(times))
     results[method_name] = {
         "reconstruction": x_rec,
         "loss": loss,
         "psnr": psnr,
         "times": times,
-        "cycles": cycles if not only_cycles else None
+        "cycles": cycles if not only_cycles else None,
+        "cost": cost
     }
     if psnr:
         print(f"Final PSNR for {method_name}: {psnr[-1]:.2f} dB")
@@ -819,6 +887,61 @@ for i, plot_name in enumerate(plot_names):
     plt.tight_layout()
     plt.savefig(os.path.join(exp_dir, f"{plot_name}.pdf"), dpi=300, bbox_inches='tight')
     plt.close(fig_individual)
+
+# Ajouter 2 nouveaux sous-graphiques pour Cost
+fig2, axes2 = plt.subplots(1, 2, figsize=(14, 6))
+
+# Plot 5: Loss vs Cost
+for method_name, result in results.items():
+    if result['loss'] and result['cost']:
+        print("Plotting cost for method:", method_name)
+        axes2[0].plot(result['cost'], result['loss'],
+                    color=method_colors[method_name],
+                    linestyle=method_linestyles[method_name],
+                    label=method_name,
+                    linewidth=2)
+        # Ajouter les marqueurs de cycles
+        if result['cycles'] is not None and len(result['cycles']) > 0:
+            cycle_costs = [result['cost'][i-1] for i in result['cycles']]
+            cycle_losses = [result['loss'][i-1] for i in result['cycles']]
+            axes2[0].scatter(cycle_costs, cycle_losses,
+                            color=method_colors[method_name],
+                            marker=method_markers.get(method_name, "o"),
+                            s=80,
+                            label=f"cycles_{method_name}")
+
+axes2[0].set_xlabel('Cost (operations count)')
+axes2[0].set_ylabel('Loss')
+axes2[0].set_title('Loss over Cost')
+axes2[0].legend(frameon=True)
+axes2[0].grid(True)
+
+# Plot 6: PSNR vs Cost
+for method_name, result in results.items():
+    if result['psnr'] and result['cost']:
+        axes2[1].plot(result['cost'], result['psnr'],
+                    color=method_colors[method_name],
+                    linestyle=method_linestyles[method_name],
+                    label=method_name,
+                    linewidth=2)
+        if result['cycles'] is not None and len(result['cycles']) > 0:
+            cycle_costs = [result['cost'][i-1] for i in result['cycles']]
+            cycle_psnrs = [result['psnr'][i-1] for i in result['cycles']]
+            axes2[1].scatter(cycle_costs, cycle_psnrs,
+                            color=method_colors[method_name],
+                            marker=method_markers.get(method_name, "o"),
+                            s=80,
+                            label=f"cycles_{method_name}")
+
+axes2[1].set_xlabel('Cost (operations count)')
+axes2[1].set_ylabel('PSNR (dB)')
+axes2[1].set_title('PSNR over Cost')
+axes2[1].legend(frameon=True)
+axes2[1].grid(True)
+
+plt.savefig(os.path.join(exp_dir, "loss_psnr_vs_cost.pdf"), dpi=300, bbox_inches='tight')
+plt.show()
+plt.close(fig2)
 
 
 # Plot the reconstructions together
