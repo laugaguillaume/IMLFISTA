@@ -938,7 +938,6 @@ axes2[1].set_ylabel('PSNR (dB)')
 axes2[1].set_title('PSNR over Cost')
 axes2[1].legend(frameon=True)
 axes2[1].grid(True)
-
 plt.savefig(os.path.join(exp_dir, "loss_psnr_vs_cost.pdf"), dpi=300, bbox_inches='tight')
 plt.show()
 plt.close(fig2)
