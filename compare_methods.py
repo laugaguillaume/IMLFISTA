@@ -56,7 +56,7 @@ prior_type = "L1_wavelet"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 600
+n_iter = 10000
 reg_weight = 0.1
 Anorm2 = physics.compute_norm(x_true).item()
 stepsize = 0.05/Anorm2
@@ -202,7 +202,7 @@ biggest_multilevel_iter = 0
 
 #%%%--- Reconstruction %%%---
 
-only_cycles = True  # Whether to only keep the values at the end of each cycle for BCD methods
+only_cycles = False  # Whether to only keep the values at the end of each cycle for BCD methods
 
 def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
     only_cycles = False
@@ -350,11 +350,10 @@ def run_BCD_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidel
     return recon, loss, psnr, times, cycles
 
 def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, params=params):
-    only_cycles = True
     prior_l1 = dinv.optim.L1Prior()
     len_cycle = J+1
-    n_cycles=40
-    #n_cycles = int(params['n_iter'] / (len_cycle * params['n_coarse_steps'] * (params['J'] + 1)))
+    #n_cycles=40
+    n_cycles = int(params['n_iter'] / (len_cycle * params['n_coarse_steps'] * (params['J'] + 1)))
 
     n = x0.shape[-1] * x0.shape[-2]
 
@@ -376,7 +375,7 @@ def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fid
         psnr = [psnr[index-1] for index in cycles]
         times = [times[index-1] for index in cycles]
 
-    print(len(loss))
+    '''print(len(loss))
 
     plt.figure(figsize=(6,4))
     plt.plot(cost, loss)
@@ -384,9 +383,9 @@ def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fid
     plt.ylabel("Loss")
     plt.title("Loss en fonction du coût")
     plt.grid(True)
-    plt.show()
+    plt.show()'''
 
-    return recon, loss, psnr, times, cycles, cost
+    return recon, loss, psnr, times, cycles#, cost
 
 def run_PnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
 
@@ -682,15 +681,15 @@ sys.exit()'''
 #%%--- Run methods %%%---
 
 methods = {
-    "FB": run_FB,
+    #"FB": run_FB,
     #"MLFB": run_MLFB,
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
     #"MLFBcond": run_MLFBcond,
-    #"BCD_FB": run_BCD_FB,
-    #"BCD_MLFB": run_BCD_MLFB,
+    "BCD_FB": run_BCD_FB,
+    "BCD_MLFB": run_BCD_MLFB,
     "BCDcyclic": run_BCD_cyclic,
-    #"BCDcond": run_BCDcond,
+    "BCDcond": run_BCDcond,
     #"BCDcyclic_cond": run_BCD_cyclic_cond
 }
 
@@ -699,7 +698,7 @@ for method_name, method_func in methods.items():
     x0 = y.clone()
     print(f"Running {method_name}...")
     params['update_mode'] = method_name
-    x_rec, loss, psnr, times, cycles, cost = method_func(x0, y, x_true=x_true)
+    x_rec, loss, psnr, times, cycles = method_func(x0, y, x_true=x_true)
     print("Method: ", method_name, " Loss: ", len(loss) if loss is not None else 'No loss', " PSNR: ", len(psnr), " Times: ", len(times))
     results[method_name] = {
         "reconstruction": x_rec,
@@ -707,7 +706,7 @@ for method_name, method_func in methods.items():
         "psnr": psnr,
         "times": times,
         "cycles": cycles if not only_cycles else None,
-        "cost": cost
+        #"cost": cost
     }
     if psnr:
         print(f"Final PSNR for {method_name}: {psnr[-1]:.2f} dB")
@@ -887,7 +886,7 @@ for i, plot_name in enumerate(plot_names):
     plt.tight_layout()
     plt.savefig(os.path.join(exp_dir, f"{plot_name}.pdf"), dpi=300, bbox_inches='tight')
     plt.close(fig_individual)
-
+'''
 # Ajouter 2 nouveaux sous-graphiques pour Cost
 fig2, axes2 = plt.subplots(1, 2, figsize=(14, 6))
 
@@ -940,7 +939,7 @@ axes2[1].legend(frameon=True)
 axes2[1].grid(True)
 plt.savefig(os.path.join(exp_dir, "loss_psnr_vs_cost.pdf"), dpi=300, bbox_inches='tight')
 plt.show()
-plt.close(fig2)
+plt.close(fig2)'''
 
 
 # Plot the reconstructions together
