@@ -7,24 +7,25 @@
 import os
 import platform
 import json
-from datetime import datetime
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import deepinv as dinv
 import time
 import seaborn as sns
-from pathlib import Path
-from tqdm import tqdm
 import pywt
+import pickle
+import threading, psutil
+
+from tqdm import tqdm
+from pathlib import Path
+from datetime import datetime
 
 from block.block import BlockCoordinateDescent
 from block.utils import wavelet_numpy_to_torch, wavelet_torch_to_numpy
 from multilevel.multilevel import ParametersMultilevel, MultiLevel, MultiLevelWavelets, WaveletDenoiserConditional
 from multilevel.multilevel_initialization import ml_init_pnp
 from multilevel.utils import WaveletPriorCustom
-
-import threading, psutil
 
 def memory_watchdog(limit_gb=8, check_interval=5):
     """Function to monitor memory usage and terminate the program if it exceeds a limit."""
@@ -36,6 +37,8 @@ def memory_watchdog(limit_gb=8, check_interval=5):
             os._exit(1)
         time.sleep(check_interval)
 
+threading.Thread(target=memory_watchdog, args=(12, 5), daemon=True).start()
+
 # Plot settings
 sns.set_theme()
 sns.color_palette("colorblind")
@@ -45,19 +48,27 @@ colors = sns.color_palette("colorblind")
 device = torch.device('cpu')
 print(f"Using device: {device}")
 
+seed = torch.manual_seed(0)  # Random seed for reproducibility
+
 PSNR = dinv.metric.PSNR()
 
 # Ground truth
-#x_true = dinv.utils.load_example("butterfly.png", device=device)
-x_true = dinv.utils.load_image("pillars_of_creation.png", img_size=4096, device=device)
+x_true = dinv.utils.load_example("butterfly.png", device=device)
+#x_true = dinv.utils.load_image("pillars_of_creation.png", img_size=4096, device=device)
 print(x_true.shape)
 
 #%%------ MODEL -----%%
 # Physics
+physics_type = 'deblurring' # 'inpainting' or 'deblurring'
 sigma = 0.01
 noise_model = dinv.physics.GaussianNoise(sigma=sigma)
-physics = dinv.physics.Inpainting(img_size=x_true.shape[1:], mask=0.8, device=device, noise_model=noise_model)
-seed = torch.manual_seed(0)  # Random seed for reproducibility
+
+if physics_type == 'inpainting':
+    physics = dinv.physics.Inpainting(img_size=x_true.shape[1:], mask=0.8, device=device, noise_model=noise_model)
+elif physics_type == 'deblurring':
+    filter_0 = dinv.physics.blur.gaussian_blur(sigma=(5, 5), angle=0.0)
+    physics = dinv.physics.Blur(filter_0, padding="reflect")
+physics.noise_model = noise_model
 
 # Observation
 y = physics(x_true)
@@ -79,7 +90,7 @@ filter = 'daubechies8'
 wv_type = 'db8'
 
 # For multilevel algorithms
-multilevel_iter = 50 #int(0.1 * n_iter)  # Number of multilevel iterations at the fine level
+multilevel_iter = 15 #int(0.1 * n_iter)  # Number of multilevel iterations at the fine level
 n_coarse_steps = 5  # Number of coarse steps per level in each multilevel iteration
 
 # For BCD algorithms
@@ -149,10 +160,10 @@ if isinstance(physics, dinv.physics.Inpainting):
     coarsest_physics = coarse_physics[f'level{1}']
     args_multilevel.coarse_physics = coarse_physics
 
-x_true_coarse = wavelet_numpy_to_torch(pywt.wavedec2(x_true.detach().cpu().numpy(), wavelet=wv_type, level=J, mode='periodization'))[0].to(device)
+    coarse_operator_norm = coarsest_physics.compute_norm(x_true_coarse).item()
+    print(f'Fine level operator norm: {Anorm2}, coarsest level operator norm: {coarse_operator_norm}')
 
-coarse_operator_norm = coarsest_physics.compute_norm(x_true_coarse).item()
-print(f'Fine level operator norm: {Anorm2}, coarsest level operator norm: {coarse_operator_norm}')
+x_true_coarse = wavelet_numpy_to_torch(pywt.wavedec2(x_true.detach().cpu().numpy(), wavelet=wv_type, level=J, mode='periodization'))[0].to(device)
 
 # Initialize coarse observations
 observations = {f'level{levels}': y}
@@ -741,20 +752,6 @@ for method_name, method_func in methods.items():
     else:
         print(f"No PSNR computed for {method_name}")
 
-#%%%--- Plotting results %%%---
-
-# === Global style configuration ===
-plt.rcParams.update({
-    'lines.markersize': 3,     # pour les plt.plot()
-    'lines.linewidth': 2,
-    'axes.labelsize': 14,
-    'axes.titlesize': 16,
-    'legend.fontsize': 12,
-})
-
-# === Taille globale pour les marqueurs de cycles ===
-CYCLE_MARKER_SIZE = 20  # ajuste ici (ex : 10 ou 5 pour plus petit)
-
 # === Définition des couleurs, styles et marqueurs ===
 method_colors = {
     "FB": colors[0],
@@ -790,222 +787,39 @@ method_markers = {
     "BCDcyclic_cond": "o"
 }
 
-# Petite fonction utilitaire pour scatter avec taille standardisée
-def scatter_small(ax, *args, **kwargs):
-    kwargs.setdefault("s", CYCLE_MARKER_SIZE)
-    return ax.scatter(*args, **kwargs)
 
-# === Création des subplots ===
-fig, axes = plt.subplots(1, 4, figsize=(28, 6))
+#%%%--- Saving results %%%---
 
-# === 1. Loss vs Iterations ===
-for method_name, result in results.items():
-    if result['loss']:
-        axes[0].plot(result['loss'],
-                     color=method_colors[method_name],
-                     linestyle=method_linestyles[method_name],
-                     label=method_name)
-        if result['cycles']:
-            scatter_small(
-                axes[0],
-                result['cycles'],
-                [result['loss'][i-1] for i in result['cycles']],
-                color=method_colors[method_name],
-                marker=method_markers.get(method_name, "o"),
-                label=f"cycles_{method_name}"
-            )
+results_data = {
+    'results': results,  # Contient tous les résultats des méthodes
+    'params': params,    # Paramètres de l'expérience
+    'x_true': x_true.cpu().numpy(),  # Image de référence
+    'y': y.cpu().numpy(),            # Observation
+    'multilevel_iter': multilevel_iter,
+    'method_info': {
+        'colors': method_colors,
+        'linestyles': method_linestyles,
+        'markers': method_markers
+    }
+}
 
-axes[0].axvline(x=multilevel_iter, color='red', linestyle='--',
-                label=f"End of ML iterations ({multilevel_iter})")
-axes[0].set(xlabel='Iteration', ylabel='Loss', title='Loss over Iterations')
-axes[0].legend(frameon=True)
+# Convertir les tensors en numpy pour la sauvegarde
+for method_name, result in results_data['results'].items():
+    if result['reconstruction'] is not None:
+        result['reconstruction'] = result['reconstruction'].cpu().numpy()
+    # Les loss, psnr, times sont déjà en listes Python normalement
 
-# === 2. Loss vs Time ===
-for method_name, result in results.items():
-    if result['loss'] and result['times']:
-        axes[1].plot(result['times'], result['loss'],
-                     color=method_colors[method_name],
-                     linestyle=method_linestyles[method_name],
-                     label=method_name)
-        if result['cycles']:
-            cycle_times = [result['times'][i-1] for i in result['cycles']]
-            cycle_losses = [result['loss'][i-1] for i in result['cycles']]
-            scatter_small(
-                axes[1],
-                cycle_times,
-                cycle_losses,
-                color=method_colors[method_name],
-                marker=method_markers.get(method_name, "o"),
-                label=f"cycles_{method_name}"
-            )
+# Sauvegarder avec pickle
+results_path = os.path.join(exp_dir, "results.pkl")
+with open(results_path, 'wb') as f:
+    pickle.dump(results_data, f)
 
-axes[1].set(xlabel='CPU time (s)', ylabel='Loss', title='Loss over CPU Time')
-axes[1].legend(frameon=True)
+print(f"Results saved to: {results_path}")
 
-# === 3. PSNR vs Iterations ===
-for method_name, result in results.items():
-    if result['psnr']:
-        axes[2].plot(result['psnr'],
-                     color=method_colors[method_name],
-                     linestyle=method_linestyles[method_name],
-                     label=method_name)
-        if result['cycles']:
-            scatter_small(
-                axes[2],
-                result['cycles'],
-                [result['psnr'][i-1] for i in result['cycles']],
-                color=method_colors[method_name],
-                marker=method_markers.get(method_name, "o"),
-                label=f"cycles_{method_name}"
-            )
+# Sauvegarder aussi les paramètres en JSON pour référence facile
+params_path = os.path.join(exp_dir, "params.json")
+with open(params_path, "w") as f:
+    json.dump(params, f, indent=4)
 
-axes[2].axvline(x=multilevel_iter, color='red', linestyle='--',
-                label=f"End of ML iterations ({multilevel_iter})")
-axes[2].set(xlabel='Iteration', ylabel='PSNR (dB)', title='PSNR over Iterations')
-axes[2].legend(frameon=True)
-
-# === 4. PSNR vs Time ===
-for method_name, result in results.items():
-    if result['psnr'] and result['times']:
-        axes[3].plot(result['times'], result['psnr'],
-                     color=method_colors[method_name],
-                     linestyle=method_linestyles[method_name],
-                     label=method_name)
-        if result['cycles']:
-            cycle_times = [result['times'][i-1] for i in result['cycles']]
-            cycle_psnrs = [result['psnr'][i-1] for i in result['cycles']]
-            scatter_small(
-                axes[3],
-                cycle_times,
-                cycle_psnrs,
-                color=method_colors[method_name],
-                marker=method_markers.get(method_name, "o"),
-                label=f"cycles_{method_name}"
-            )
-
-axes[3].set(xlabel='CPU time (s)', ylabel='PSNR (dB)', title='PSNR over CPU Time')
-axes[3].legend(frameon=True)
-
-# === Save combined figure ===
-plt.tight_layout()
-combined_path = os.path.join(exp_dir, "all_plots_combined.pdf")
-plt.savefig(combined_path, dpi=300, bbox_inches='tight')
-print(f"Combined plot saved at: {combined_path}")
-
-# === Save each plot individually ===
-plot_names = ['loss_vs_iterations', 'loss_vs_time', 'psnr_vs_iterations', 'psnr_vs_time']
-
-for i, plot_name in enumerate(plot_names):
-    fig_individual = plt.figure(figsize=(8, 6))
-    ax_individual = fig_individual.add_subplot(111)
-
-    # Copier les courbes
-    for line in axes[i].get_lines():
-        ax_individual.plot(line.get_xdata(), line.get_ydata(),
-                           color=line.get_color(),
-                           label=line.get_label(),
-                           linewidth=line.get_linewidth(),
-                           linestyle=line.get_linestyle())
-
-    # Copier les marqueurs (scatter)
-    for collection in axes[i].collections:
-        offsets = collection.get_offsets()
-        if len(offsets) > 0:
-            ax_individual.scatter(offsets[:, 0], offsets[:, 1],
-                                  color=collection.get_facecolors()[0],
-                                  s=collection.get_sizes()[0])
-
-    ax_individual.set_xlabel(axes[i].get_xlabel())
-    ax_individual.set_ylabel(axes[i].get_ylabel())
-    ax_individual.set_title(axes[i].get_title())
-    ax_individual.legend(frameon=True)
-    ax_individual.grid(True)
-
-    plt.tight_layout()
-    individual_path = os.path.join(exp_dir, f"{plot_name}.pdf")
-    plt.savefig(individual_path, dpi=300, bbox_inches='tight')
-    plt.close(fig_individual)
-    print(f"Saved: {individual_path}")
-
-plt.show()
-
-
-# Ajouter 2 nouveaux sous-graphiques pour Cost
-'''fig2, axes2 = plt.subplots(1, 2, figsize=(14, 6))
-
-# Plot 5: Loss vs Cost
-for method_name, result in results.items():
-    if result['loss'] and result['cost']:
-        print("Plotting cost for method:", method_name)
-        axes2[0].plot(result['cost'], result['loss'],
-                    color=method_colors[method_name],
-                    linestyle=method_linestyles[method_name],
-                    label=method_name,
-                    linewidth=2)
-        # Ajouter les marqueurs de cycles
-        if result['cycles'] is not None and len(result['cycles']) > 0:
-            cycle_costs = [result['cost'][i-1] for i in result['cycles']]
-            cycle_losses = [result['loss'][i-1] for i in result['cycles']]
-            axes2[0].scatter(cycle_costs, cycle_losses,
-                            color=method_colors[method_name],
-                            marker=method_markers.get(method_name, "o"),
-                            s=80,
-                            label=f"cycles_{method_name}")
-
-axes2[0].set_xlabel('Cost (operations count)')
-axes2[0].set_ylabel('Loss')
-axes2[0].set_title('Loss over Cost')
-axes2[0].legend(frameon=True)
-axes2[0].grid(True)
-
-# Plot 6: PSNR vs Cost
-for method_name, result in results.items():
-    if result['psnr'] and result['cost']:
-        axes2[1].plot(result['cost'], result['psnr'],
-                    color=method_colors[method_name],
-                    linestyle=method_linestyles[method_name],
-                    label=method_name,
-                    linewidth=2)
-        if result['cycles'] is not None and len(result['cycles']) > 0:
-            cycle_costs = [result['cost'][i-1] for i in result['cycles']]
-            cycle_psnrs = [result['psnr'][i-1] for i in result['cycles']]
-            axes2[1].scatter(cycle_costs, cycle_psnrs,
-                            color=method_colors[method_name],
-                            marker=method_markers.get(method_name, "o"),
-                            s=80,
-                            label=f"cycles_{method_name}")
-
-axes2[1].set_xlabel('Cost (operations count)')
-axes2[1].set_ylabel('PSNR (dB)')
-axes2[1].set_title('PSNR over Cost')
-axes2[1].legend(frameon=True)
-axes2[1].grid(True)
-plt.savefig(os.path.join(exp_dir, "loss_psnr_vs_cost.pdf"), dpi=300, bbox_inches='tight')
-plt.show()
-plt.close(fig2)'''
-
-
-# Plot the reconstructions together
-images = [x_true, y]
-titles = ["Original", "Observation"]
-subtitles = ["PSNR:", f"{PSNR(y, x_true).item():.2f} dB"]
-
-for method_name, res in results.items():
-    x_rec = res["reconstruction"]
-    psnr = res["psnr"]
-    if x_rec is not None:
-        images.append(x_rec)
-        titles.append(f"{method_name}")
-        if psnr:
-            subtitles.append(f"{psnr[-1]:.2f} dB")
-    else:
-        print(f"No reconstruction for {method_name}")
-
-dinv.utils.plot(
-    images,
-    titles=titles,
-    subtitles=subtitles,
-    cmap="gray",
-    tight=False,
-    save_fn=os.path.join(exp_dir, "all_reconstructions.pdf")
-)
+print(f"Parameters saved to: {params_path}")
+print(f"\nTo plot results, run: python plot_results.py {exp_dir}")
