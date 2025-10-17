@@ -53,13 +53,13 @@ seed = torch.manual_seed(0)  # Random seed for reproducibility
 PSNR = dinv.metric.PSNR()
 
 # Ground truth
-x_true = dinv.utils.load_example("butterfly.png", device=device)
-#x_true = dinv.utils.load_image("pillars_of_creation.png", img_size=4096, device=device)
+#x_true = dinv.utils.load_example("butterfly.png", device=device)
+x_true = dinv.utils.load_image("pillars_of_creation.png", img_size=4096, device=device)
 print(x_true.shape)
 
 #%%------ MODEL -----%%
 # Physics
-physics_type = 'deblurring' # 'inpainting' or 'deblurring'
+physics_type = 'inpainting' # 'inpainting' or 'deblurring'
 sigma = 0.01
 noise_model = dinv.physics.GaussianNoise(sigma=sigma)
 
@@ -75,14 +75,14 @@ y = physics(x_true)
 
 # Objective function
 data_fidelity = dinv.optim.L2()
-prior_type = "L1_wavelet"  # "TV", "L1", "L1_wavelet"
+prior_type = "TV"  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 150
-reg_weight = 0.1
+n_iter = 100
+reg_weight = 0.01
 Anorm2 = physics.compute_norm(x_true).item()
-stepsize = 0.05/Anorm2
+stepsize = 0.1/Anorm2
 
 J = 4         # Number of wavelet levels
 levels = J+1  # Same but the Multilevel function uses levels=J+1
@@ -113,8 +113,8 @@ elif prior_type == "TV":
     prior = dinv.optim.TVPrior(n_it_max=50)
     denoiser = prior.prox
 elif prior_type == "L1_wavelet":
-    #prior = dinv.optim.WaveletPrior(level=J, wv=wv_type, p=1, mode='periodic', device=device)
-    prior = WaveletPriorCustom(level=J, wv=wv_type, p=1, device=device)
+    prior = dinv.optim.WaveletPrior(level=J, wv=wv_type, p=1, mode='periodic', device=device)
+    #prior = WaveletPriorCustom(level=J, wv=wv_type, p=1, device=device)
     denoiser = prior.prox
 
 # Block coordinate descent setup
@@ -144,6 +144,8 @@ args_multilevel = ParametersMultilevel(
 args_multilevel.info_transfer = filter
 wv_type = args_multilevel.information_transfer.wavelet_type
 
+x_true_coarse = wavelet_numpy_to_torch(pywt.wavedec2(x_true.detach().cpu().numpy(), wavelet=wv_type, level=J, mode='periodization'))[0].to(device)
+
 # Initialize coarse physics
 if isinstance(physics, dinv.physics.Inpainting):
     coarse_physics = {f'level{levels}': physics}
@@ -162,8 +164,6 @@ if isinstance(physics, dinv.physics.Inpainting):
 
     coarse_operator_norm = coarsest_physics.compute_norm(x_true_coarse).item()
     print(f'Fine level operator norm: {Anorm2}, coarsest level operator norm: {coarse_operator_norm}')
-
-x_true_coarse = wavelet_numpy_to_torch(pywt.wavedec2(x_true.detach().cpu().numpy(), wavelet=wv_type, level=J, mode='periodization'))[0].to(device)
 
 # Initialize coarse observations
 observations = {f'level{levels}': y}
@@ -227,6 +227,9 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
     n = x0.shape[-1] * x0.shape[-2]
     filter_size = 8  # for db8
     cost = [0*(n**3 + n**2)]
+
+    extend_value = 1 #(J+1) * n_coarse_steps
+
     start = time.process_time()
 
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
@@ -250,14 +253,14 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
                         times.append(time.process_time() - start)
                 else:
                     current_loss_val = data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
-                    loss.extend([current_loss_val] * (J+1) * n_coarse_steps)
+                    loss.extend([current_loss_val] * extend_value)
 
                     if x_true is not None:
                         current_psnr_val = PSNR(xk, x_true).item()
-                        psnr.extend([current_psnr_val] * (J+1) * n_coarse_steps)
+                        psnr.extend([current_psnr_val] * extend_value)
 
                     current_time_val = time.process_time() - start
-                    times.extend([current_time_val] * (J+1) * n_coarse_steps)
+                    times.extend([current_time_val] * extend_value)
 
 
     # --- Plot ---
@@ -285,13 +288,16 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
     profiler = cProfile.Profile()
     profiler.enable()
 
-    start = time.process_time()
-    loss, psnr, times = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], [start]
+    loss, psnr, times = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], [0]
     xk = x0.clone().to(device)
+
     levels = args_multilevel.levels
     param_regularization = params['reg_weight']
     param_gamma = params['stepsize']
+
     global biggest_multilevel_iter
+
+    start = time.process_time()
 
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
 
@@ -355,7 +361,6 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
                         times.extend([current_time_val] * extend_value)
 
     recon = xk.clone()
-    times = [t - start for t in times]  # Convert to elapsed time
     cycles = None
     cost = None
     return recon, loss, psnr, times, cycles, cost
@@ -720,11 +725,11 @@ sys.exit()'''
 #%%--- Run methods %%%---
 
 methods = {
-    #"FB": run_FB,
-    "MLFB": run_MLFB,
+    "FB": run_FB,
+    #"MLFB": run_MLFB,
     #"PnP": run_PnP,
     #"MLPnP": run_MLPnP,
-    "MLFBcond": run_MLFBcond,
+    #"MLFBcond": run_MLFBcond,
     #"BCD_FB": run_BCD_FB,
     #"BCD_MLFB": run_BCD_MLFB,
     #"BCDcyclic": run_BCD_cyclic,
@@ -822,4 +827,4 @@ with open(params_path, "w") as f:
     json.dump(params, f, indent=4)
 
 print(f"Parameters saved to: {params_path}")
-print(f"\nTo plot results, run: python plot_results.py {exp_dir}")
+print(f"\nTo plot results, run: python3 plot_results.py {exp_dir}")
