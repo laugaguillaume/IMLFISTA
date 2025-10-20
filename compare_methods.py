@@ -16,6 +16,7 @@ import seaborn as sns
 import pywt
 import pickle
 import threading, psutil
+import argparse
 
 from tqdm import tqdm
 from pathlib import Path
@@ -26,6 +27,25 @@ from block.utils import wavelet_numpy_to_torch, wavelet_torch_to_numpy
 from multilevel.multilevel import ParametersMultilevel, MultiLevel, MultiLevelWavelets, WaveletDenoiserConditional
 from multilevel.multilevel_initialization import ml_init_pnp
 from multilevel.utils import WaveletPriorCustom
+
+# --- ARGUMENTS PARSING ------
+
+parser = argparse.ArgumentParser(description="Run inverse problem experiments with different configurations.")
+
+parser.add_argument("--physics", type=str, choices=["inpainting", "deblurring"], default="deblurring", help="Type of physics model to use.")
+parser.add_argument("--prior", type=str, choices=["TV", "L1", "L1_wavelet"], default="L1_wavelet", help="Type of prior to use.")
+parser.add_argument("--reg_weight", type=float, default=0.01, help="Regularization weight λ.")
+parser.add_argument("--stepsize", type=float, default=0.1, help="Stepsize for the gradient descent.")
+parser.add_argument("--sigma", type=float, default=0.01, help="Noise level for GaussianNoise.")
+parser.add_argument("--J", type=int, default=4, help="Number of wavelet levels.")
+parser.add_argument("--n_iter", type=int, default=50, help="Number of iterations for the solver.")
+parser.add_argument("--n_coarse_steps", type=int, default=5, help="Number of coarse steps per level in multilevel iterations.")
+parser.add_argument("--image_size", type=str, choices=["small", "big"], default="small", help="Select which image size to use.")
+parser.add_argument("--methods", type=str, nargs="+", default=["FB"], help="List of methods to run (e.g. FB MLFB BCD_FB).")
+
+args = parser.parse_args()
+
+# --- MEMORY WATCHDOG (avoid out of memory errors) ------
 
 def memory_watchdog(limit_gb=8, check_interval=5):
     """Function to monitor memory usage and terminate the program if it exceeds a limit."""
@@ -39,7 +59,7 @@ def memory_watchdog(limit_gb=8, check_interval=5):
 
 threading.Thread(target=memory_watchdog, args=(12, 5), daemon=True).start()
 
-# Plot settings
+# --- SETUP -----
 sns.set_theme()
 sns.color_palette("colorblind")
 colors = sns.color_palette("colorblind")
@@ -52,20 +72,24 @@ seed = torch.manual_seed(0)  # Random seed for reproducibility
 
 PSNR = dinv.metric.PSNR()
 
+# --- LOAD IMAGE ----- %%
+
 # Ground truth
-#x_true = dinv.utils.load_example("butterfly.png", device=device)
-x_true = dinv.utils.load_image("pillars_of_creation.png", img_size=4096, device=device)
-print(x_true.shape)
+if args.image_size == "small":
+    x_true = dinv.utils.load_example("butterfly.png", device=device)
+else:
+    x_true = dinv.utils.load_image("pillars_of_creation.png", img_size=2048, device=device)
+
+print(f'x_true.shape: {x_true.shape}')
 
 #%%------ MODEL -----%%
 # Physics
-physics_type = 'inpainting' # 'inpainting' or 'deblurring'
-sigma = 0.01
+sigma = args.sigma  # Noise level
 noise_model = dinv.physics.GaussianNoise(sigma=sigma)
 
-if physics_type == 'inpainting':
+if args.physics == 'inpainting':
     physics = dinv.physics.Inpainting(img_size=x_true.shape[1:], mask=0.8, device=device, noise_model=noise_model)
-elif physics_type == 'deblurring':
+elif args.physics == 'deblurring':
     filter_0 = dinv.physics.blur.gaussian_blur(sigma=(5, 5), angle=0.0)
     physics = dinv.physics.Blur(filter_0, padding="reflect")
 physics.noise_model = noise_model
@@ -75,23 +99,23 @@ y = physics(x_true)
 
 # Objective function
 data_fidelity = dinv.optim.L2()
-prior_type = "TV"  # "TV", "L1", "L1_wavelet"
+prior_type = args.prior  # "TV", "L1", "L1_wavelet"
 
 
 #%%------ PARAMETERS -----%%
-n_iter = 100
-reg_weight = 0.01
+n_iter = args.n_iter
+reg_weight = args.reg_weight
 Anorm2 = physics.compute_norm(x_true).item()
-stepsize = 0.1/Anorm2
+stepsize = args.stepsize/Anorm2
 
-J = 4         # Number of wavelet levels
+J = args.J         # Number of wavelet levels
 levels = J+1  # Same but the Multilevel function uses levels=J+1
 filter = 'daubechies8'
 wv_type = 'db8'
 
 # For multilevel algorithms
 multilevel_iter = 15 #int(0.1 * n_iter)  # Number of multilevel iterations at the fine level
-n_coarse_steps = 5  # Number of coarse steps per level in each multilevel iteration
+n_coarse_steps = args.n_coarse_steps  # Number of coarse steps per level in each multilevel iteration
 
 # For BCD algorithms
 update_mode = 'MLFBcond'  # 'MLFB', 'FB' or 'MLFBcond'
@@ -191,7 +215,10 @@ else:
 EXPERIMENTS_ROOT.mkdir(parents=True, exist_ok=True)
 
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-exp_name = f"exp_{timestamp}_J{J}_mode{update_mode}_reg{reg_weight}_niter{n_iter}_sigma{sigma}"
+exp_name = (
+    f"exp_{timestamp}_J{J}_reg{reg_weight}_sigma{sigma}_niter{n_iter}"
+    f"_ncoarse{n_coarse_steps}_{args.image_size}"
+)
 exp_dir = os.path.join(EXPERIMENTS_ROOT, exp_name)
 os.makedirs(exp_dir, exist_ok=True)
 
@@ -221,46 +248,33 @@ biggest_multilevel_iter = 0
 only_cycles = False  # Whether to only keep the values at the end of each cycle for BCD methods
 
 def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
-    only_cycles = False
-
-    loss, psnr, times = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], [0]
-    n = x0.shape[-1] * x0.shape[-2]
-    filter_size = 8  # for db8
-    cost = [0*(n**3 + n**2)]
-
     extend_value = 1 #(J+1) * n_coarse_steps
+
+    n = x0.shape[-1] * x0.shape[-2]
+    filter_size = 16  # for db8
+
+    loss, psnr, times, cost = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], [0], [(n**3 + n**2)]
 
     start = time.process_time()
 
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
-
     xk = x0.clone().to(device)
     with torch.no_grad():
         with tqdm(range(params['n_iter']), desc="FB") as t:
             for k in t:
-                cost.append(cost[-1] + n**2 + n*filter_size**2 + n)
+                # Gradient step
                 xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
+                # Proximal step
                 xk = prior.prox(xk, gamma=params['stepsize'] * params['reg_weight'])
 
-                if only_cycles:
-                    if k % (n_coarse_steps*J) == 0:
-                        if x_true is not None:
-                            current_psnr = PSNR(xk, x_true).item()
-                            psnr.append(current_psnr)
-                        current_loss =  data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
-                        t.set_postfix(loss=f"{current_loss:.4f}")
-                        loss.append(current_loss)
-                        times.append(time.process_time() - start)
-                else:
-                    current_loss_val = data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
-                    loss.extend([current_loss_val] * extend_value)
-
-                    if x_true is not None:
-                        current_psnr_val = PSNR(xk, x_true).item()
-                        psnr.extend([current_psnr_val] * extend_value)
-
-                    current_time_val = time.process_time() - start
-                    times.extend([current_time_val] * extend_value)
+                current_loss_val = data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
+                loss.extend([current_loss_val] * extend_value)
+                current_time_val = time.process_time() - start
+                times.extend([current_time_val] * extend_value)
+                cost.extend([cost[-1] + n**2 + n*filter_size**2 + n] * extend_value)
+                if x_true is not None:
+                    current_psnr_val = PSNR(xk, x_true).item()
+                    psnr.extend([current_psnr_val] * extend_value)
 
 
     # --- Plot ---
@@ -276,20 +290,12 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
 
     recon = xk.clone()
     cycles = None
-    print(f'len(loss) for FB: {len(loss)}')
     return recon, loss, psnr, times, cycles, cost
 
 def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params, args_multilevel=args_multilevel):
-
-    import cProfile
-    import pstats
-    from pstats import SortKey
-
-    profiler = cProfile.Profile()
-    profiler.enable()
+    extend_value = 1#(((J+1)*(J+2))//2) * n_coarse_steps
 
     loss, psnr, times = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], [0]
-    xk = x0.clone().to(device)
 
     levels = args_multilevel.levels
     param_regularization = params['reg_weight']
@@ -298,9 +304,8 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
     global biggest_multilevel_iter
 
     start = time.process_time()
-
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
-
+    xk = x0.clone().to(device)
     with torch.no_grad():
         with tqdm(range(params['n_iter'])) as t:
             for k in t:
@@ -322,13 +327,6 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
                         #psnr += intermediate_psnrs
                         biggest_multilevel_iter = len(loss)
 
-                    profiler.disable()
-
-                    # Afficher les résultats
-                    '''stats = pstats.Stats(profiler)
-                    stats.sort_stats(SortKey.CUMULATIVE)
-                    stats.print_stats(20)  # Top 20 des fonctions les plus gourmandes'''
-
                     # Gradient step
                     xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
 
@@ -339,26 +337,13 @@ def run_MLFB(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fidelity,
                         xk = prior.prox(xk, gamma=[param_gamma * param_regularization])
 
                     # Compute metrics
-                    if only_cycles:
-                        if k % (n_coarse_steps*J) == 0:
-                            if x_true is not None:
-                                current_psnr = PSNR(xk, x_true).item()
-                                psnr.append(current_psnr)
-                            current_loss =  data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
-                            t.set_postfix(loss=f"{current_loss:.4f}")
-                            loss.append(current_loss)
-                            times.append(time.process_time() - start)
-                    else:
-                        extend_value = 1#(((J+1)*(J+2))//2) * n_coarse_steps
-                        current_loss_val = data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
-                        loss.extend([current_loss_val] * extend_value)
-
-                        if x_true is not None:
-                            current_psnr_val = PSNR(xk, x_true).item()
-                            psnr.extend([current_psnr_val] * extend_value)
-
-                        current_time_val = time.process_time() - start
-                        times.extend([current_time_val] * extend_value)
+                    current_loss_val = data_fidelity.fn(xk, y, physics).item() + params['reg_weight'] * prior.fn(xk).item()
+                    loss.extend([current_loss_val] * extend_value)
+                    current_time_val = time.process_time() - start
+                    times.extend([current_time_val] * extend_value)
+                    if x_true is not None:
+                        current_psnr_val = PSNR(xk, x_true).item()
+                        psnr.extend([current_psnr_val] * extend_value)
 
     recon = xk.clone()
     cycles = None
@@ -424,7 +409,7 @@ def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fid
     plt.title("Loss en fonction du coût")
     plt.grid(True)
     plt.show()
-'''
+    '''
     return recon, loss, psnr, times, cycles, cost
 
 def run_PnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
@@ -724,18 +709,22 @@ sys.exit()'''
 
 #%%--- Run methods %%%---
 
-methods = {
+# Complete list of all methods
+all_methods = {
     "FB": run_FB,
-    #"MLFB": run_MLFB,
-    #"PnP": run_PnP,
-    #"MLPnP": run_MLPnP,
-    #"MLFBcond": run_MLFBcond,
-    #"BCD_FB": run_BCD_FB,
-    #"BCD_MLFB": run_BCD_MLFB,
-    #"BCDcyclic": run_BCD_cyclic,
-    #"BCD_MLFB_details": run_BCDcond,
-    #"BCDcyclic_cond": run_BCD_cyclic_cond
+    "MLFB": run_MLFB,
+    "PnP": run_PnP,
+    "MLPnP": run_MLPnP,
+    "MLFBcond": run_MLFBcond,
+    "BCD_FB": run_BCD_FB,
+    "BCD_MLFB": run_BCD_MLFB,
+    "BCDcyclic": run_BCD_cyclic,
+    "BCD_MLFB_details": run_BCDcond,
+    "BCDcyclic_cond": run_BCD_cyclic_cond
 }
+
+# Filter the methods to run based on user input
+methods = {name: all_methods[name] for name in args.methods if name in all_methods}
 
 results = {}
 for method_name, method_func in methods.items():
@@ -757,7 +746,7 @@ for method_name, method_func in methods.items():
     else:
         print(f"No PSNR computed for {method_name}")
 
-# === Définition des couleurs, styles et marqueurs ===
+# === Define method colors, linestyles, and markers ===
 method_colors = {
     "FB": colors[0],
     "MLFB": colors[0],
@@ -808,20 +797,20 @@ results_data = {
     }
 }
 
-# Convertir les tensors en numpy pour la sauvegarde
+# Convert tensors to numpy arrays for pickle compatibility
 for method_name, result in results_data['results'].items():
     if result['reconstruction'] is not None:
         result['reconstruction'] = result['reconstruction'].cpu().numpy()
     # Les loss, psnr, times sont déjà en listes Python normalement
 
-# Sauvegarder avec pickle
+# Save results using pickle
 results_path = os.path.join(exp_dir, "results.pkl")
 with open(results_path, 'wb') as f:
     pickle.dump(results_data, f)
 
 print(f"Results saved to: {results_path}")
 
-# Sauvegarder aussi les paramètres en JSON pour référence facile
+# Save parameters as JSON for easy reference
 params_path = os.path.join(exp_dir, "params.json")
 with open(params_path, "w") as f:
     json.dump(params, f, indent=4)
