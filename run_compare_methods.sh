@@ -6,14 +6,14 @@
 # --- Paramètres ---
 PHYSICS="deblurring"          # or "inpainting"
 PRIOR="L1_wavelet"            # or "L1", "TV"
-REG_WEIGHT=0.01               # lambda
+REG_WEIGHT=0.001               # lambda
 STEPSIZE=0.1
 SIGMA=0.01
 J=3
-N_ITER=50
+N_ITER=200
 N_COARSE_STEPS=5
 IMAGE_SIZE="small"            # or "big"
-METHODS="BCD_FB BCD_MLFB BCDcyclic BCD_MLFB_details"         # space separated (FB MLFB PnP MLPnP MLFBcond BCD_FB BCD_MLFB BCDcyclic BCD_MLFB_details BCDcyclic_cond)
+METHODS="FB BCD_FB BCD_MLFB BCDcyclic BCD_MLFB_details"         # space separated (FB MLFB PnP MLPnP MLFBcond BCD_FB BCD_MLFB BCDcyclic BCD_MLFB_details BCDcyclic_cond)
 # ==========================
 
 # --- Main call ---
@@ -36,7 +36,7 @@ python3 compare_methods.py \
   --methods $METHODS
 
 # --- Identify experiment directory ---
-EXP_DIR=$(ls -td /projects/users/edesaint/IMLFISTA/experiments_results/compare_methods/exp_* | head -1)
+EXP_DIR=$(ls -td experiments_results/compare_methods/exp_* | head -1)
 
 echo ""
 echo "Done. Results stored in:"

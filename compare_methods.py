@@ -45,6 +45,8 @@ parser.add_argument("--methods", type=str, nargs="+", default=["FB"], help="List
 
 args = parser.parse_args()
 
+print(args.physics)
+
 # --- MEMORY WATCHDOG (avoid out of memory errors) ------
 
 def memory_watchdog(limit_gb=8, check_interval=5):
@@ -90,7 +92,7 @@ noise_model = dinv.physics.GaussianNoise(sigma=sigma)
 if args.physics == 'inpainting':
     physics = dinv.physics.Inpainting(img_size=x_true.shape[1:], mask=0.8, device=device, noise_model=noise_model)
 elif args.physics == 'deblurring':
-    filter_0 = dinv.physics.blur.gaussian_blur(sigma=(5, 5), angle=0.0)
+    filter_0 = dinv.physics.blur.gaussian_blur(sigma=(2, 2), angle=0.0)
     physics = dinv.physics.Blur(filter_0, padding="reflect")
 physics.noise_model = noise_model
 
@@ -137,8 +139,8 @@ elif prior_type == "TV":
     prior = dinv.optim.TVPrior(n_it_max=50)
     denoiser = prior.prox
 elif prior_type == "L1_wavelet":
-    prior = dinv.optim.WaveletPrior(level=J, wv=wv_type, p=1, mode='periodic', device=device)
-    #prior = WaveletPriorCustom(level=J, wv=wv_type, p=1, device=device)
+    # prior = dinv.optim.WaveletPrior(level=J, wv=wv_type, p=1, mode='periodic', device=device)
+    prior = WaveletPriorCustom(level=J, wv=wv_type, p=1, device=device)
     denoiser = prior.prox
 
 # Block coordinate descent setup
@@ -248,7 +250,7 @@ biggest_multilevel_iter = 0
 only_cycles = False  # Whether to only keep the values at the end of each cycle for BCD methods
 
 def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):
-    extend_value = 1 #(J+1) * n_coarse_steps
+    extend_value = (J+1) * n_coarse_steps
 
     n = x0.shape[-1] * x0.shape[-2]
     filter_size = 16  # for db8
@@ -260,7 +262,8 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
     stepsizeATy = params['stepsize'] * physics.A_adjoint(y)
     xk = x0.clone().to(device)
     with torch.no_grad():
-        with tqdm(range(params['n_iter']), desc="FB") as t:
+        with tqdm(range(1000), desc="FB") as t:
+        #with tqdm(range(params['n_iter']), desc="FB") as t:
             for k in t:
                 # Gradient step
                 xk = xk - params['stepsize'] * (physics.A_adjoint(physics.A(xk))) + stepsizeATy
