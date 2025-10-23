@@ -253,9 +253,10 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
     extend_value = (J+1) * n_coarse_steps
 
     n = x0.shape[-1] * x0.shape[-2]
+    N = x0.shape[-1]
     filter_size = 16  # for db8
 
-    loss, psnr, times, cost = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], [0], [(n**3 + n**2)]
+    loss, psnr, times, cost = [data_fidelity.fn(x0, y, physics).item() + params['reg_weight'] * prior.fn(x0).item()], [PSNR(x0, x_true).item()], [0], [4*N**3]
 
     start = time.process_time()
 
@@ -274,22 +275,22 @@ def run_FB(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, pri
                 loss.extend([current_loss_val] * extend_value)
                 current_time_val = time.process_time() - start
                 times.extend([current_time_val] * extend_value)
-                cost.extend([cost[-1] + n**2 + n*filter_size**2 + n] * extend_value)
+                cost.extend([cost[-1] + 4*N**3 + N**2] * extend_value)
                 if x_true is not None:
                     current_psnr_val = PSNR(xk, x_true).item()
                     psnr.extend([current_psnr_val] * extend_value)
 
 
     # --- Plot ---
-    '''print(cost[0])
-    cost, loss = cost[1:], loss[1:]
+    print(cost[0])
+    #cost, loss = cost[1:], loss[1:]
     plt.figure(figsize=(6,4))
     plt.plot(cost, loss)
     plt.xlabel("Coût (opérations)")
     plt.ylabel("Loss")
     plt.title("Loss en fonction du coût")
     plt.grid(True)
-    plt.show()'''
+    plt.show()
 
     recon = xk.clone()
     cycles = None
@@ -382,14 +383,15 @@ def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fid
     #n_cycles = int(params['n_iter'] / (len_cycle * params['n_coarse_steps'] * (params['J'] + 1)))
 
     n = x0.shape[-1] * x0.shape[-2]
+    N = x0.shape[-1]
 
     xk = x0.clone()
     bcd = BlockCoordinateDescent(x_true.shape, wv_type=wv_type, physics=physics, data_fidelity=data_fidelity, prior=prior_l1, max_levels=J, stepsize=stepsize)
 
     recon, loss, times, cycles, psnr = bcd.run(y, xk, x_true=x_true, n_iter=n_cycles, n_iter_coarse=params['n_coarse_steps'], reg_weight=params['reg_weight'], update_mode='cyclic', metrics=True)
 
-    cost = [n**3 + n**2 + ((2/(3*4**J) +1/3))*n**2 + (2/(3*4**J) +1/3)*n**3 + (1/4**(2*J) + (1-1/4**J)**2/9 + (2*(1-1/4**J))/(3*4**J))*n**3]
-    cost += [0*cost[0] + k*((1/4**(2*J) + (1-1/4**J)**2/9 + (2*(1-1/4**J)/(3*4**J)))*n**2 + (2/(3*4**J) + 1/3)*n ) for k in range(1, len(cycles)+1)]
+    cost = [34*N**3]
+    cost += [K*4*N**3 for K in range(1, len(loss))]
 
     cycles = [1] + cycles
 
@@ -401,18 +403,18 @@ def run_BCD_cyclic(x0, y, x_true=x_true, physics=physics, data_fidelity=data_fid
         psnr = [psnr[index-1] for index in cycles]
         times = [times[index-1] for index in cycles]
 
-    '''print(cost[0])
+    print(cost[0])
 
-    loss, cost = loss[1:], cost[1:]'''
+    #loss, cost = loss[1:], cost[1:]
 
-    '''plt.figure(figsize=(6,4))
+    plt.figure(figsize=(6,4))
     plt.plot(cost, loss)
     plt.xlabel("Coût (opérations)")
     plt.ylabel("Loss")
     plt.title("Loss en fonction du coût")
     plt.grid(True)
     plt.show()
-    '''
+
     return recon, loss, psnr, times, cycles, cost
 
 def run_PnP(x0, y, x_true=None, physics=physics, data_fidelity=data_fidelity, prior=prior, params=params):

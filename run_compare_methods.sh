@@ -9,11 +9,11 @@ PRIOR="L1_wavelet"            # or "L1", "TV"
 REG_WEIGHT=0.001               # lambda
 STEPSIZE=0.1
 SIGMA=0.01
-J=3
-N_ITER=200
+J=1
+N_ITER=100
 N_COARSE_STEPS=5
 IMAGE_SIZE="small"            # or "big"
-METHODS="FB BCD_FB BCD_MLFB BCDcyclic BCD_MLFB_details"         # space separated (FB MLFB PnP MLPnP MLFBcond BCD_FB BCD_MLFB BCDcyclic BCD_MLFB_details BCDcyclic_cond)
+METHODS="FB"         # space separated (FB MLFB PnP MLPnP MLFBcond BCD_FB BCD_MLFB BCDcyclic BCD_MLFB_details BCDcyclic_cond)
 # ==========================
 
 # --- Main call ---

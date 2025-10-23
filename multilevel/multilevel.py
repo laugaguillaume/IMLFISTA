@@ -27,7 +27,7 @@ PSNR = dinv.metric.PSNR()
 
 from multilevel.utils import nabla, local_average, get_approximation_previous_scale, comparative_plot_wavelets, WaveletPriorCustom
 
-def MultiLevel2(xk, level_max, levels, args_multilevel, param_regularization, cst_grad=None, device='cpu', x_true=None, xk_finest=None):
+def MultiLevel(xk, level_max, levels, args_multilevel, param_regularization, cst_grad=None, device='cpu', x_true=None, xk_finest=None):
     """
     Multilevel step for image reconstruction
     """
@@ -70,7 +70,6 @@ def MultiLevel2(xk, level_max, levels, args_multilevel, param_regularization, cs
     else:
         cst_grad_fine = cst_grad.clone()
     xk_coarse = information_transfer.to_coarse(xk, xk.shape[-3:])
-    print(f"Level {levels}, base case, xk_coarse shape: {xk_coarse.shape}, coarse_physics shape: {coarse_physics.mask.shape}")
     cst_grad, coherence = compute_coherence(xk, xk_coarse, information_transfer, data_fidelity, grad_prior, cst_grad, physics, coarse_physics, observation, coarse_observation, param_reg_fine, param_reg_coarse)
     coherence = step_size*coherence.to(device)
     x0_coarse = xk_coarse.clone()
@@ -82,8 +81,7 @@ def MultiLevel2(xk, level_max, levels, args_multilevel, param_regularization, cs
     with torch.no_grad():
         for k in range(param_coarse_iter):
             if levels > 1 and k < max_ML_steps:
-                print(f"Level {levels}, coarse iteration {k}, xk_coarse shape: {xk_coarse.shape}, coarse_physics shape: {coarse_physics.mask.shape}")
-                xk_coarse, _, _, _ = MultiLevel(xk_coarse, level_max, levels-1, args_multilevel, param_reg_coarse, cst_grad) # Recursive call if levels > 1
+                xk_coarse = MultiLevel(xk_coarse, level_max, levels-1, args_multilevel, param_reg_coarse, cst_grad) # Recursive call if levels > 1
             xk_coarse = xk_coarse -coherence \
                 - step_size*data_fidelity.grad(xk_coarse, coarse_observation, coarse_physics) \
                 - step_size*grad_prior(xk_coarse, param_reg_coarse) # Coarse gradient descent
@@ -94,10 +92,10 @@ def MultiLevel2(xk, level_max, levels, args_multilevel, param_regularization, cs
     xk, step_coarse = ML_linesearch(xk, level_max, levels+1, coarse_correction, cst_grad_fine, data_fidelity, observation, physics, grad_prior, denoiser, prior, param_reg_fine,  step_coarse*2)
     # xk = xk + step_coarse* coarse_correction
     # print(f"Step size at level {levels}: {step_coarse}")
-    return xk, [], [], []
+    return xk
 
 
-def MultiLevel(
+def MultiLevel2(
     xk,
     level_max,
     levels,
@@ -171,6 +169,8 @@ def MultiLevel(
         param_reg_coarse,
     )
     coherence = step_size * coherence.to(device)
+    print('Coherence shape:', coherence.shape)
+    print(f'xk shape: {xk.shape}, xk_coarse shape: {xk_coarse.shape}')
     x0_coarse = xk_coarse.clone()
     step_coarse = 1
 
@@ -751,6 +751,9 @@ def ML_linesearch(
                     xk + step_coarse * coarse_correction
                 )  # Apply the step size
         else:
+            print('Not at level max in line search, level = ', levels)
+            print(f"Coherence shape: {coherence.shape}")
+            print(f'xk shape: {xk.shape}')
             f_current = (
                 data_fidelity(xk, observation, physics)
                 + reg_fine * torch.norm(denoiser(xk), p=1)

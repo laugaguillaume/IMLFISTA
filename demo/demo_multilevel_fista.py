@@ -20,7 +20,7 @@ from tqdm import tqdm
 perf_psnr = PSNR()
 
 # Define device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
 print(f'device is {device}')
 
 
